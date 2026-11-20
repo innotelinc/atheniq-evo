@@ -35,14 +35,40 @@ inside `lib/server/identity/host/`.
 | `app/api/classrooms/launch/route.ts` | **new** — portal session + access check → bridge ticket → HttpOnly cookie → redirect. |
 | `app/portal/page.tsx` | adds *AI classroom* beside *Open course* when a bridge is configured. |
 
+## Verified against the pinned commit
+
+```bash
+cd upstream/OpenMAIC
+pnpm install --frozen-lockfile
+NODE_OPTIONS=--max-old-space-size=6144 pnpm exec tsc --noEmit -p tsconfig.json
+pnpm build
+```
+
+Both pass at the pinned commit: `tsc` exits 0 and `next build` emits
+`/classroom/[id]`, `/api/atheniq/classroom` and `/api/atheniq/completion`. Two
+gotchas worth knowing before running them:
+
+- `tsc` needs the larger heap. The default 2 GB aborts with "Ineffective
+  mark-compacts near heap limit" on this monorepo.
+- The install's own `postinstall` shells out to `pnpm run build:packages`, so
+  `pnpm` must be on PATH; a corepack shim or a global install is enough.
+
 ## Regenerating after an upstream bump
 
 ```bash
 cd upstream/OpenMAIC && git checkout <new commit> && git apply ../../patches/openmaic/*.patch
-# fix conflicts, then:
-git add -A && git diff --cached --binary > ../../patches/openmaic/0001-atheniq-classroom-integration.patch
+# fix conflicts, then regenerate from the touched paths only:
+git add -- instrumentation.ts 'app/classroom/[id]/page.tsx' \
+  lib/server/identity/host/atheniq-classroom.ts app/api/atheniq components/atheniq
+git diff --cached --binary -- instrumentation.ts 'app/classroom/[id]/page.tsx' \
+  lib/server/identity/host/atheniq-classroom.ts app/api/atheniq components/atheniq \
+  > ../../patches/openmaic/0001-atheniq-classroom-integration.patch
 git reset
 ```
+
+Name the paths rather than using `git add -A`: `node_modules/` and
+`public/vendor/standalone-player/` are untracked in that checkout, and staging
+them takes minutes and produces a patch no one can review.
 
 Update `upstream.lock.json` in the same commit. A patch that no longer applies is
 a signal to read the upstream change, not to force it.

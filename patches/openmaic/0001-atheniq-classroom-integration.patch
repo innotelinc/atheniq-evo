@@ -385,10 +385,10 @@ index a269144..c8543f3 100644
    const { warnIfDeprecatedWorkbenchFlagIsUsed } =
 diff --git a/lib/server/identity/host/atheniq-classroom.ts b/lib/server/identity/host/atheniq-classroom.ts
 new file mode 100644
-index 0000000..78d7fb1
+index 0000000..826bb5c
 --- /dev/null
 +++ b/lib/server/identity/host/atheniq-classroom.ts
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,203 @@
 +/**
 + * AthenIQ classroom identity — the host method that makes a learner one person
 + * across the console, the LMS and this classroom.
@@ -436,7 +436,15 @@ index 0000000..78d7fb1
 +  exp: number;
 +}
 +
-+function decode(value: string): Uint8Array {
++/**
++ * Base64url → bytes.
++ *
++ * The return type is deliberately inferred: annotating it `Uint8Array` widens the
++ * buffer to `ArrayBufferLike`, which `crypto.subtle.verify` refuses (it takes a
++ * `BufferSource` over a plain `ArrayBuffer`). Inference keeps the narrower type
++ * the Web Crypto signature needs.
++ */
++function decode(value: string) {
 +  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
 +  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
 +  const binary = atob(padded);

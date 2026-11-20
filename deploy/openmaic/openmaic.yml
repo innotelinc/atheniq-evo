@@ -15,6 +15,18 @@ providers:
     apiKey: ${OMNIROUTE_API_KEY}
     # gateway.innotel.us serves the OpenAI-compatible surface under /v1.
     baseUrl: ${OMNIROUTE_BASE_URL}
+    # Without this list the app warns at boot and can only offer its built-in
+    # fallback model names. These ids are read back from the gateway's own
+    # /v1/models, so the picker offers what it actually serves; edit the list
+    # rather than inventing a name, since a wrong id fails at request time.
+    models:
+      - auto/best-chat
+      - auto/best-fast
+      - auto/best-reasoning
+      - auto/best-vision
+      - antigravity/gemini-3.1-flash-image
+      - openrouter/openai/gpt-audio
+      - dva/inkling-high
 
 slots:
   # The default chat model: the outline, scene content and chat all follow it
