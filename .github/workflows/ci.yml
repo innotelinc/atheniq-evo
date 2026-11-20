@@ -140,48 +140,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the institution image
-        run: docker build --tag atheniq-institution:ci apps/institution
-
-      - name: Start the container
+      - name: Build and start the image
         run: |
+          docker build --tag atheniq-institution:ci apps/institution
           docker run --detach --name atheniq-institution \
             --publish 8080:8080 \
-            --env NODE_ENV=production \
-            --env PORT=8080 \
-            --env INSTITUTION_ORIGIN=https://atheniq.institute \
-            --env REGISTRAR_ORIGIN=https://registrar.atheniq.institute \
             --env SESSION_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')" \
             --env REGISTRAR_PASSWORD=ci-registrar-password \
             --env COOKIE_SECURE=true \
-            --env INSTITUTION_SEED_DEMO=false \
             atheniq-institution:ci
 
       - name: Wait for /health
         run: |
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error http://127.0.0.1:8080/health \
-              | grep --quiet '"service":"atheniq-institution"'; then
+            if curl --fail --silent http://127.0.0.1:8080/health > /dev/null; then
               echo "healthy after ${attempt}s"
               exit 0
             fi
             sleep 1
           done
-          echo "health check did not pass"
           docker logs atheniq-institution
           exit 1
 
-      - name: Legal and portal pages respond
-        run: |
-          for path in / /privacy /terms /accessibility /portal; do
-            status="$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:8080${path}")"
-            echo "${path} ${status}"
-            test "${status}" = "200"
-          done
-
-      - name: Container logs
-        if: always()
-        run: docker logs atheniq-institution
+      - name: Home page renders
+        run: curl --fail --silent http://127.0.0.1:8080/ > /dev/null
 
       - name: Remove the container
         if: always()

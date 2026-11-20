@@ -231,6 +231,19 @@ export class Registry {
     return { student, tempPassword };
   }
 
+  /** Record that the provider created (or re-created) the mailbox. */
+  activateMailbox(studentId: string, now: Date = new Date()): Student | undefined {
+    this.store.mutate((data) => {
+      const target = data.students.find((item) => item.id === studentId);
+      if (!target) return;
+      if (target.mailbox.status !== "active") {
+        target.mailbox.status = "active";
+        target.mailbox.activatedAt = now.toISOString();
+      }
+    });
+    return this.student(studentId);
+  }
+
   students(): Student[] {
     return [...this.store.read().students].sort((a, b) => a.number.localeCompare(b.number));
   }

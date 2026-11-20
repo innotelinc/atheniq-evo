@@ -130,9 +130,14 @@ services:
       REGISTRAR_PASSWORD_HASH: ${REGISTRAR_PASSWORD_HASH:-}
       MAIL_DOMAIN: ${MAIL_DOMAIN:-atheniq.institute}
       MAIL_PROVIDER: ${MAIL_PROVIDER:-local}
+      STALWART_URL: ${STALWART_URL:-}
+      STALWART_TOKEN: ${STALWART_TOKEN:-}
+      STALWART_QUOTA_BYTES: ${STALWART_QUOTA_BYTES:-0}
       ATHENIQ_BRIDGE_URL: http://bridge:8787
       ATHENIQ_BRIDGE_SERVICE_TOKEN: ${BRIDGE_SERVICE_TOKEN:?set BRIDGE_SERVICE_TOKEN in .env}
-      CONSOLE_BASE_URL: http://console:3100
+      # A browser link, so it must be the host the visitor can reach — not the
+      # Compose service name. The bridge's own CONSOLE_BASE_URL stays internal.
+      CONSOLE_BASE_URL: ${CONSOLE_BASE_URL:-http://localhost:3100}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       INSTITUTION_SEED_DEMO: ${INSTITUTION_SEED_DEMO:-false}
     volumes:

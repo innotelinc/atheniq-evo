@@ -69,7 +69,7 @@ Admission is the only place a password is minted, and the plaintext is returned
 scrypt hash. If that page is lost, the registrar issues a reset; nobody can
 recover the password, including the Institute.
 
-## Accounts and the `@atheniq.institute` address
+## Accounts and the `@MAIL_DOMAIN` address
 
 Rules the registry enforces:
 
@@ -77,34 +77,44 @@ Rules the registry enforces:
   lower-cased; a collision becomes `first.last2@`, then `3`, and so on.
 - **The address is permanent.** It is not derived from the program or the
   intake, so a student who changes program keeps it.
-- **The mailbox starts `reserved`.** The record exists in the Institute
-  directory; delivery is a provider operation. `MAIL_PROVIDER=local` means "this
-  deployment has not connected a provider yet", and the portal and registrar say
-  so rather than implying mail is flowing.
+- **The mailbox starts `reserved`, then becomes `active`.** `MAIL_PROVIDER=local`
+  reserves the address in the registry only. With `MAIL_PROVIDER=stalwart`,
+  admission creates the account at the provider in the same request, and a
+  failure leaves the address reserved rather than blocking the portal account.
 - **The account is issued, not self-service.** An application creates no account.
   Acceptance creates one. There is no public sign-up form that can mint a student
   id, and no route that lets a browser choose its own student number.
 
-### Connecting a mail provider
+### Connecting Stalwart
 
-The service catalog used for this build returned **no provider that supplies
-mailbox hosting plus a provisioning API**, so nothing was invented. The
-integration point is deliberately small:
+The Institute uses Stalwart at `mail.innotel.us`. The registry remains the
+source of truth for who exists; Stalwart is the delivery system.
 
-1. Choose a provider that supports custom-domain mailboxes and an admin API for
-   create / suspend / alias. For an institution, evaluate **Google Workspace for
-   Education** and **Microsoft 365 Education** first; **Migadu** and **Zoho Mail**
-   are lower-cost options worth pricing against real seat counts.
-2. Verify: API access on the plan you are buying, alias and group support,
-   retention and eDiscovery, SSO with your identity provider, and whether
-   suspended students keep their mail.
-3. Set `MAIL_PROVIDER` to the provider's name. The registry already records the
-   provider on each mailbox, so a mixed migration is visible per student.
-4. Publish `SPF`, `DKIM` and `DMARC` for `atheniq.institute`. A student address
-   that lands in spam is worse than no address, and DMARC is now table stakes
-   for an institution sending admissions mail.
-5. Add the provider's sync to the registrar: `reserved → active` on success,
-   `disabled` on suspension. The status field exists; the API call does not yet.
+1. **Create the domain in Stalwart** under Management → Domains. It must equal
+   `MAIL_DOMAIN` (`atheniq.institute` by default). If the Stalwart domain is
+   `innotel.us`, set `MAIL_DOMAIN=innotel.us` so issued addresses and accounts
+   agree; the service refuses to provision an address outside that domain.
+2. **Create an API key** with `sysDomainQuery`, `sysAccountCreate` and
+   `sysAccountUpdate`. Put it in `STALWART_TOKEN`. The key is a bearer credential
+   and must stay out of the browser and version control.
+3. **Set** `MAIL_PROVIDER=stalwart` and `STALWART_URL=https://mail.innotel.us`.
+   `STALWART_QUOTA_BYTES` is optional (`0` means no per-mailbox quota).
+4. **Publish** MX, SPF, DKIM and DMARC for the mail domain. Stalwart's domain
+   page generates the records when DNS management is manual.
+5. **Test** one admission. The registrar's confirmation should say the mailbox is
+   active, and the student's temporary password should open both the portal and
+   the mailbox. Changing the portal password or resetting access updates the
+   Stalwart credential as well.
+
+If Stalwart is unreachable the admission still succeeds and the address stays
+`reserved`. Fix the provider settings, then use **Reset access** on the student
+record; that issues a new temporary password and retries the mailbox. The
+registrar console and portal both show the status, so a mixed migration is
+visible per student.
+
+Stalwart's management API is JMAP at `/jmap/`, not a REST endpoint. The calls are
+in `apps/institution/src/mail.ts`; the account and domain objects are documented
+at `stalw.art/docs/ref/object/account` and `.../domain`.
 
 ## Data and its limits
 

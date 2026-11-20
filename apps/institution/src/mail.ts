@@ -1,0 +1,172 @@
+/**
+ * Mailbox provisioning through Stalwart's JMAP management API.
+ *
+ * The registry reserves an address on admission. When Stalwart is configured,
+ * this module turns that reservation into a real account whose password is the
+ * student's temporary password, and keeps the password in step when the student
+ * changes it or the registrar resets access.
+ *
+ * Stalwart object lists are encoded as JSON objects, not arrays. See
+ * https://stalw.art/docs/auth/accounts/manage and /docs/ref/object/domain.
+ */
+
+import type { InstitutionConfig } from "./config.ts";
+
+export interface Mailer {
+  /** "stalwart" — used in notices and the mailbox record. */
+  readonly provider: string;
+  /** Create the account, or update its password if it already exists. */
+  ensureAccount(address: string, password: string, displayName: string): Promise<void>;
+}
+
+export class MailError extends Error {}
+
+interface StalwartOptions {
+  baseUrl: string;
+  token: string;
+  domain: string;
+  quotaBytes?: number;
+  fetcher?: typeof fetch;
+}
+
+type JmapMethodResponse = [string, Record<string, unknown>, string];
+
+export class StalwartMailer implements Mailer {
+  readonly provider = "stalwart";
+  private readonly baseUrl: string;
+  private readonly token: string;
+  private readonly domain: string;
+  private readonly quotaBytes: number;
+  private readonly fetcher: typeof fetch;
+  private domainId: string | null = null;
+
+  constructor(options: StalwartOptions) {
+    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.token = options.token;
+    this.domain = options.domain.toLowerCase();
+    this.quotaBytes = options.quotaBytes ?? 0;
+    this.fetcher = options.fetcher ?? fetch;
+  }
+
+  async ensureAccount(address: string, password: string, displayName: string): Promise<void> {
+    const { local, domain } = this.split(address);
+    const domainId = await this.stalwartDomainId();
+    const result = await this.jmap("x:Account/set", {
+      create: {
+        new1: {
+          "@type": "User",
+          name: local,
+          domainId,
+          description: displayName.slice(0, 200),
+          credentials: { "0": { "@type": "Password", secret: password } },
+          aliases: {},
+          memberGroupIds: {},
+          roles: { "@type": "User" },
+          permissions: { "@type": "Inherit" },
+          quotas: this.quotaBytes > 0 ? { maxDiskQuota: this.quotaBytes } : {},
+          encryptionAtRest: { "@type": "Disabled" },
+        },
+      },
+    });
+
+    const created = result.created as Record<string, { id?: string }> | undefined;
+    if (created?.new1?.id) return;
+
+    // A concurrent or earlier attempt may have created the same address. Update
+    // that account instead of leaving the reservation stuck.
+    const notCreated = result.notCreated as
+      | Record<string, { type?: string; existingId?: string; description?: string }>
+      | undefined;
+    if (notCreated?.new1?.existingId) {
+      await this.setPassword(notCreated.new1.existingId, password);
+      return;
+    }
+    const reason = notCreated?.new1?.description ?? notCreated?.new1?.type ?? "unknown error";
+    throw new MailError(`Stalwart could not create ${local}@${domain}: ${reason}`);
+  }
+
+  private split(address: string): { local: string; domain: string } {
+    const at = address.lastIndexOf("@");
+    const local = at > 0 ? address.slice(0, at) : "";
+    const domain = at > 0 ? address.slice(at + 1).toLowerCase() : "";
+    if (!local || domain !== this.domain) {
+      throw new MailError(`Refusing to provision ${address}: STALWART uses ${this.domain}`);
+    }
+    return { local, domain };
+  }
+
+  private async stalwartDomainId(): Promise<string> {
+    if (this.domainId) return this.domainId;
+    const result = await this.jmap("x:Domain/query", { filter: { name: this.domain } });
+    const ids = Array.isArray(result.ids) ? result.ids : [];
+    if (ids.length === 0) {
+      throw new MailError(
+        `Stalwart has no domain ${this.domain}. Add it under Management → Domains before admitting students.`,
+      );
+    }
+    this.domainId = String(ids[0]);
+    return this.domainId;
+  }
+
+  private async setPassword(accountId: string, password: string): Promise<void> {
+    const result = await this.jmap("x:Account/set", {
+      update: { [accountId]: { "credentials/0/secret": password } },
+    });
+    const notUpdated = result.notUpdated as Record<string, { description?: string }> | undefined;
+    if (notUpdated?.[accountId]) {
+      throw new MailError(`Stalwart could not set the mailbox password: ${notUpdated[accountId].description ?? "unknown error"}`);
+    }
+  }
+
+  private async jmap(method: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/jmap/`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({
+          using: ["urn:ietf:params:jmap:core", "urn:stalwart:jmap"],
+          methodCalls: [[method, args, "0"]],
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      throw new MailError(`Stalwart is unreachable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (!response.ok) {
+      const detail = (await response.text().catch(() => "")).slice(0, 300);
+      throw new MailError(`Stalwart answered ${response.status}${detail ? `: ${detail}` : ""}`);
+    }
+
+    let payload: { methodResponses?: JmapMethodResponse[] };
+    try {
+      payload = (await response.json()) as { methodResponses?: JmapMethodResponse[] };
+    } catch {
+      throw new MailError("Stalwart returned a response that is not JSON");
+    }
+    const entry = payload.methodResponses?.[0];
+    if (!entry) throw new MailError(`Stalwart returned no response for ${method}`);
+    const [name, result] = entry;
+    if (name === "error") {
+      const description = typeof result.description === "string" ? result.description : String(result.type ?? "error");
+      throw new MailError(`Stalwart rejected ${method}: ${description}`);
+    }
+    return result;
+  }
+}
+
+/** Null means "reserve the address in the registry only". */
+export function createMailer(config: InstitutionConfig): Mailer | null {
+  if (config.mailProvider === "local") return null;
+  return new StalwartMailer({
+    baseUrl: config.stalwartUrl,
+    token: config.stalwartToken,
+    domain: config.mailDomain,
+    quotaBytes: config.stalwartQuotaBytes,
+  });
+}

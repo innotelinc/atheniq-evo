@@ -32,6 +32,7 @@ import {
 } from "./auth.ts";
 import type { InstitutionConfig } from "./config.ts";
 import { fetchTranscript } from "./bridge.ts";
+import { createMailer, type Mailer } from "./mail.ts";
 import type { Registry } from "./registry.ts";
 import type { Student } from "./store.ts";
 import { esc, layout, type Surface, type UiContext, type Viewer } from "./ui.ts";
@@ -79,6 +80,7 @@ interface RequestContext {
   body: URLSearchParams;
   ip: string;
   student: Student | null;
+  mailer: Mailer | null;
   params: Record<string, string>;
 }
 
@@ -95,6 +97,8 @@ interface Route {
 export interface ServerDeps {
   config: InstitutionConfig;
   registry: Registry;
+  /** Override for tests; defaults to the configured provider. */
+  mailer?: Mailer | null;
 }
 
 const routes: Route[] = [];
@@ -199,6 +203,29 @@ function sameOrigin(request: IncomingMessage, host: string): boolean {
 function studentRequired(context: RequestContext): Student {
   if (!context.student) throw new Error("student session required");
   return context.student;
+}
+
+/**
+ * Create or update the provider mailbox. A failure never blocks the portal
+ * account: the address stays reserved and a reset retries it.
+ */
+async function provisionMailbox(
+  registry: Registry,
+  mailer: Mailer | null,
+  student: Student,
+  password: string,
+): Promise<"active" | "reserved" | "failed"> {
+  if (!mailer) return student.mailbox.status === "active" ? "active" : "reserved";
+  try {
+    await mailer.ensureAccount(student.schoolEmail, password, `${student.firstName} ${student.lastName}`);
+    registry.activateMailbox(student.id);
+    return "active";
+  } catch (error) {
+    console.error(
+      `atheniq-institution: mailbox provisioning failed for ${student.number}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return "failed";
+  }
 }
 
 /* ------------------------------------------------------------------ routes */
@@ -310,7 +337,7 @@ route("public", "GET", "/portal/password", (context) => {
   const student = studentRequired(context);
   return html(200, password(contextFor(context.config), student, { forced: student.mustChangePassword }));
 });
-route("public", "POST", "/portal/password", (context) => {
+route("public", "POST", "/portal/password", async (context) => {
   const student = studentRequired(context);
   const current = context.body.get("current") ?? "";
   const next = context.body.get("next") ?? "";
@@ -323,6 +350,7 @@ route("public", "POST", "/portal/password", (context) => {
   if (!result.ok) {
     return html(422, password(ui, student, { forced: student.mustChangePassword, error: result.error }));
   }
+  await provisionMailbox(context.registry, context.mailer, student, next);
   return redirect("/portal/dashboard");
 });
 
@@ -376,7 +404,7 @@ route("registrar", "GET", "/applications/:id", ({ config, registry, params, url 
     }),
   );
 });
-route("registrar", "POST", "/applications/:id/decision", ({ config, registry, params, body }) => {
+route("registrar", "POST", "/applications/:id/decision", async ({ config, registry, mailer, params, body }) => {
   const applicationId = params.id ?? "";
   const application = registry.application(applicationId);
   const ui = contextFor(config);
@@ -392,10 +420,18 @@ route("registrar", "POST", "/applications/:id/decision", ({ config, registry, pa
   }
   const student = result.value.student;
   const tempPassword = result.value.tempPassword;
+  const mailbox = student && tempPassword ? await provisionMailbox(registry, mailer, student, tempPassword) : null;
+  const mailboxNote = !student
+    ? ""
+    : mailbox === "active"
+      ? ` The mailbox is active at ${mailer?.provider ?? "the provider"}.`
+      : mailer
+        ? " The mailbox is still reserved; fix the Stalwart settings and reset the student's access to retry."
+        : " The address is reserved because mail delivery is not configured.";
   return html(
     200,
     applicationDetail(ui, fresh, {
-      notice: "Admitted. The student account and mailbox reservation were created in one write.",
+      notice: `Admitted. The student account and address were created in one write.${mailboxNote}`,
       ...(student && tempPassword
         ? {
             credentials: {
@@ -423,7 +459,7 @@ route("registrar", "GET", "/students/:id", ({ config, registry, params, url }) =
     }),
   );
 });
-route("registrar", "POST", "/students/:id/reset", ({ config, registry, params }) => {
+route("registrar", "POST", "/students/:id/reset", async ({ config, registry, mailer, params }) => {
   const student = registry.student(params.id ?? "");
   const ui = contextFor(config);
   if (!student) return html(404, notFound(ui, "registrar"));
@@ -431,11 +467,17 @@ route("registrar", "POST", "/students/:id/reset", ({ config, registry, params })
   if (!result.ok) {
     return html(409, studentDetail(ui, student, registry.enrollmentsFor(student.id), { error: result.error }));
   }
+  const mailbox = await provisionMailbox(registry, mailer, student, result.value.tempPassword);
   const fresh = registry.student(student.id) ?? student;
+  const notice = !mailer
+    ? "Access reset. Hand the temporary password over securely."
+    : mailbox === "active"
+      ? "Access reset. The mailbox password was updated. Hand the temporary password over securely."
+      : "Access reset. The portal password changed, but the mailbox could not be updated. Fix the Stalwart settings and reset again.";
   return html(
     200,
     studentDetail(ui, fresh, registry.enrollmentsFor(fresh.id), {
-      notice: "Access reset. Hand the temporary password over securely.",
+      notice,
       tempPassword: result.value.tempPassword,
     }),
   );
@@ -467,6 +509,7 @@ function assetReply(path: string, method: string): Reply | null {
 
 export function createInstitutionServer(deps: ServerDeps) {
   const { config, registry } = deps;
+  const mailer = deps.mailer === undefined ? createMailer(config) : deps.mailer;
   const registrarHostname = hostnameOf(new URL(config.registrarOrigin).host);
 
   return createServer((request, response) => {
@@ -566,6 +609,7 @@ export function createInstitutionServer(deps: ServerDeps) {
       body,
       ip: ipOf(request, config),
       student,
+      mailer,
       params: {},
     };
 

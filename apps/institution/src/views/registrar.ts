@@ -132,7 +132,7 @@ export function dashboard(
             <div><dt>Student number</dt><dd>ATH-YYYY-NNNN</dd></div>
             <div><dt>Portal account</dt><dd>First sign-in at the portal</dd></div>
             <div><dt>AthenIQ email</dt><dd>first.last@${esc(ctx.mailDomain)}</dd></div>
-            <div><dt>Mailbox</dt><dd>Reserved, then activated</dd></div>
+            <div><dt>Mailbox</dt><dd>Issued, then activated at the provider</dd></div>
             <div><dt>Temporary password</dt><dd>Shown once to you</dd></div>
           </dl>
           <p class="form-note">The temporary password is displayed once, on the admission confirmation. It cannot be recovered; issue a reset instead.</p>
@@ -293,7 +293,7 @@ export function applicationDetail(
                ${application.studentId ? `<a class="button button--ghost" href="/students/${esc(application.studentId)}">Student record</a>` : ""}`
             : application.status === "denied"
               ? `<p>${statusBadge("denied")} This application was declined. A new application for a later intake is allowed.</p>`
-              : `<p>Admission creates the student number, the portal account and the mailbox reservation in one write. It cannot be undone here.</p>
+              : `<p>Admission creates the student number, the portal account and the @${esc(ctx.mailDomain)} address in one write, then activates the mailbox at the provider. It cannot be undone here.</p>
                  <form method="post" action="/applications/${esc(application.id)}/decision">
                    <div class="field">
                      <label for="note">Note (optional)</label>
@@ -307,7 +307,7 @@ export function applicationDetail(
         }
         <dl class="panel__facts mt-6">
           <div><dt>Portal account</dt><dd>Created on admission</dd></div>
-          <div><dt>Mailbox</dt><dd>Reserved on admission</dd></div>
+          <div><dt>Mailbox</dt><dd>Issued on admission</dd></div>
           <div><dt>Credentials</dt><dd>Issued by the console</dd></div>
         </dl>
       </aside>

@@ -83,22 +83,15 @@ function ctaBand(input: {
   eyebrow: string;
   title: string;
   body?: string;
-  /** Static HTML from this file only; used for the one call to action with an inline email link. */
-  bodyHtml?: string;
   href: string;
   label: string;
 }): string {
-  const copy = input.bodyHtml
-    ? `<p>${input.bodyHtml}</p>`
-    : input.body
-      ? `<p>${esc(input.body)}</p>`
-      : "";
   return `<section class="band band--ink">
     <div class="shell cta">
       <div>
         <p class="eyebrow">${esc(input.eyebrow)}</p>
         <h2>${esc(input.title)}</h2>
-        ${copy}
+        ${input.body ? `<p>${esc(input.body)}</p>` : ""}
       </div>
       <a class="button button--light" href="${esc(input.href)}">${esc(input.label)}</a>
     </div>
@@ -391,9 +384,9 @@ export function programPage(ctx: UiContext, program: Program): string {
   ${ctaBand({
     eyebrow: `${program.level} · Fall 2027`,
     title: "Questions about fit? Ask before you apply.",
-    bodyHtml: `Write to <a href="mailto:admissions@${esc(ctx.mailDomain)}">admissions@${esc(ctx.mailDomain)}</a> and a member of faculty will answer, not an admissions funnel.`,
-    href: `/admissions/apply?program=${esc(program.slug)}`,
-    label: "Begin an application",
+    body: "A member of faculty answers admissions email, not an admissions funnel.",
+    href: `mailto:admissions@${ctx.mailDomain}`,
+    label: "Email admissions",
   })}`;
 
   return layout({
@@ -599,7 +592,6 @@ export function applyForm(
           hint: "At least 80 characters. Tell us what you have built, what you want to build, and what you have read closely.",
         })}
         ${checkboxField({
-          label: "I have read the privacy notice and agree to the terms of use.",
           labelHtml: `I have read the <a href="/privacy">privacy notice</a> and agree to the <a href="/terms">terms of use</a>.`,
           name: "consent",
           checked: values.consent === "on",

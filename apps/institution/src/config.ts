@@ -21,7 +21,10 @@ export interface InstitutionConfig {
   /** A scrypt hash (`scrypt$…`) or, for development only, a plain password. */
   registrarPassword: string;
   mailDomain: string;
-  mailProvider: string;
+  mailProvider: "local" | "stalwart";
+  stalwartUrl: string;
+  stalwartToken: string;
+  stalwartQuotaBytes: number;
   bridgeUrl: string;
   bridgeToken: string;
   consoleUrl: string;
@@ -107,6 +110,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): InstitutionCon
     warnings.push("REGISTRAR_PASSWORD is plaintext in the environment; prefer REGISTRAR_PASSWORD_HASH.");
   }
 
+  const mailDomain = read(env, "MAIL_DOMAIN", "atheniq.institute").toLowerCase();
+  const provider = read(env, "MAIL_PROVIDER", "local").toLowerCase();
+  if (provider !== "local" && provider !== "stalwart") {
+    throw new ConfigError("MAIL_PROVIDER must be local or stalwart");
+  }
+  const mailProvider = provider;
+  let stalwartUrl = "";
+  let stalwartToken = "";
+  let stalwartQuotaBytes = 0;
+  if (mailProvider === "stalwart") {
+    if (!read(env, "STALWART_URL")) {
+      throw new ConfigError("STALWART_URL is required when MAIL_PROVIDER=stalwart");
+    }
+    stalwartUrl = origin(env, "STALWART_URL", "https://mail.innotel.us");
+    if (production && !stalwartUrl.startsWith("https://")) {
+      throw new ConfigError("STALWART_URL must use https in production");
+    }
+    stalwartToken = read(env, "STALWART_TOKEN");
+    if (stalwartToken.length < 16) {
+      throw new ConfigError("STALWART_TOKEN must be a Stalwart API key (16+ characters)");
+    }
+    stalwartQuotaBytes = integer(env, "STALWART_QUOTA_BYTES", 0, true);
+  }
+
   const cookieSecure = bool(env, "COOKIE_SECURE", publicOrigin.startsWith("https://"));
   if (production && !cookieSecure) {
     throw new ConfigError("COOKIE_SECURE cannot be false in production: session cookies must be Secure");
@@ -125,8 +152,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): InstitutionCon
     sessionSecret,
     registrarEmail,
     registrarPassword,
-    mailDomain: read(env, "MAIL_DOMAIN", "atheniq.institute").toLowerCase(),
-    mailProvider: read(env, "MAIL_PROVIDER", "local"),
+    mailDomain,
+    mailProvider,
+    stalwartUrl,
+    stalwartToken,
+    stalwartQuotaBytes,
     bridgeUrl: read(env, "ATHENIQ_BRIDGE_URL").replace(/\/+$/, ""),
     bridgeToken: read(env, "ATHENIQ_BRIDGE_SERVICE_TOKEN"),
     consoleUrl: read(env, "CONSOLE_BASE_URL").replace(/\/+$/, ""),
@@ -148,6 +178,7 @@ export function describeConfig(config: InstitutionConfig): Record<string, string
     dataDir: config.dataDir,
     mailDomain: config.mailDomain,
     mailProvider: config.mailProvider,
+    stalwart: Boolean(config.stalwartUrl),
     bridge: config.bridgeUrl || "not configured",
     bridgeToken: Boolean(config.bridgeToken),
     console: config.consoleUrl || "not configured",

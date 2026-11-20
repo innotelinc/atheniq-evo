@@ -66,8 +66,9 @@ Then open `http://atheniq.localhost:8080` for the public site and
 
 `npm run check` is the honest gate: a Compose guard, `tsc` over the bridge and
 the institution, 29 bridge tests that start the real HTTP server against fake
-OpenMAIC, LMS, console and OmniRoute, and 14 institution tests covering the
-application → admission → account → registration lifecycle.
+OpenMAIC, LMS, console and OmniRoute, and 22 institution tests covering the
+application → admission → account → registration lifecycle and the Stalwart
+JMAP calls against a fake server.
 
 ### One Compose rule
 
@@ -149,12 +150,13 @@ Run: `npm run check`.
   stale-signature refusal, course/learner mismatch, unknown classroom, per-step
   retry, credential idempotency, gateway model list, and the token rules
   (expiry, audience, issuer, tampering, algorithm, weak signature).
-- **14 institution tests pass**: curriculum integrity, application validation,
+- **22 institution tests pass**: curriculum integrity, application validation,
   admission issuing one account and a unique `@atheniq.institute` address,
-  temporary-password sign-in and forced change, seat accounting, full-studio
-  refusal, waitlist refusal, salted password hashes, and session role/tamper
-  rules.
-- **`tsc --noEmit` is clean** for the bridge and the shared contract.
+  mailbox activation, Stalwart account creation and password updates, the
+  provider configuration guard, temporary-password sign-in and forced change,
+  seat accounting, full-studio refusal, waitlist refusal, salted password hashes,
+  and session role/tamper rules.
+- **`tsc --noEmit` is clean** for the bridge and the institution.
 - **Both patches apply cleanly** to pristine clones of the pinned upstream
   commits (`git apply --check`).
 - **The patched console builds**: `next build` exits 0, and
@@ -184,11 +186,13 @@ first live run as the contract test for those two, and see `docs/runbook.md`.
   up where it stopped.
 - **No self-service account.** Anyone can apply on the public site, but an
   application creates no account. Admission is the only act that mints a student
-  number, a portal account and a mailbox reservation, and the temporary password
-  is shown once.
-- **The `@atheniq.institute` address is reserved, not yet delivered.** Mailbox
-  hosting is a provider integration that has not been chosen; the registry tracks
-  `reserved | active | disabled` so connecting one is a sync, not a migration.
+  number, a portal account and a `@MAIL_DOMAIN` address. The temporary password is
+  shown once.
+- **Mail is wired to Stalwart when configured.** `MAIL_PROVIDER=local` reserves
+  the address only. With `MAIL_PROVIDER=stalwart`, admission creates the mailbox
+  through Stalwart's JMAP management API, and a portal password change or a
+  registrar reset updates it. If provisioning fails, the address stays
+  `reserved` and the registrar's access reset retries it.
 - **The institution registry is one JSON file, one writer.** Right for one
   institute on one process; `docs/institution.md` names the migration path and
   the production hardening order.

@@ -17,22 +17,9 @@
   }
 
   // A horizontally scrolling table needs to be reachable without a pointer.
-  const tables = document.querySelectorAll(".table-wrap");
-  const makeScrollable = () => {
-    tables.forEach((wrap) => {
-      if (wrap.scrollWidth > wrap.clientWidth + 1) {
-        wrap.tabIndex = 0;
-        wrap.setAttribute("role", "region");
-        wrap.setAttribute("aria-label", "Scrollable table");
-      } else {
-        wrap.removeAttribute("tabindex");
-        wrap.removeAttribute("role");
-        wrap.removeAttribute("aria-label");
-      }
-    });
-  };
-  makeScrollable();
-  window.addEventListener("resize", makeScrollable);
+  document.querySelectorAll(".table-wrap").forEach((wrap) => {
+    wrap.tabIndex = 0;
+  });
 
   const counters = document.querySelectorAll("[data-counter-for]");
   counters.forEach((label) => {

@@ -127,7 +127,7 @@ export function privacy(ctx: UiContext): string {
 <li><strong>Open edX</strong> for courseware, progress and the gradebook.</li>
 <li><strong>OpenMAIC and the AthenIQ bridge</strong> for AI classroom instruction and completion records.</li>
 <li><strong>Signara</strong> to sign and issue credentials.</li>
-<li><strong>A mail provider</strong> to deliver mail to your <span class="code">@${domain}</span> address, once connected.</li>
+<li><strong>Stalwart Mail Server</strong> (<span class="code">mail.innotel.us</span>) to host and deliver mail to your <span class="code">@${domain}</span> address, when mail is configured.</li>
 <li><strong>Hosting and infrastructure providers</strong> that store the registry and serve this site.</li>
 </ul>
 <p>They process data on our instructions and under contract. We do not sell personal data. We disclose it to authorities only when the law requires it, and we tell you unless we are prohibited from doing so.</p>`,
@@ -333,14 +333,14 @@ export function accessibility(ctx: UiContext): string {
 <li>Motion is limited to a short scroll reveal, which is disabled when the visitor prefers reduced motion; there is no autoplay or sound.</li>
 <li>The site works without JavaScript; the two enhancements are optional.</li>
 <li>Layout reflows at 320 CSS pixels, and text can be enlarged to 200% without loss of content.</li>
-<li>Wide tables scroll inside a region that receives keyboard focus when it overflows.</li>
+<li>Wide tables scroll inside a keyboard-focusable container.</li>
 </ul>`,
       },
       {
         id: "limitations",
         heading: "Known limitations",
         body: `<ul>
-<li>On very narrow screens, course and roster tables scroll horizontally. The content is reachable with touch, a trackpad or a focused scroll region, but it is not the most comfortable reading experience.</li>
+<li>On very narrow screens, course and roster tables scroll horizontally. The content is reachable with touch, a trackpad or a focused scroll container, but it is not the most comfortable reading experience.</li>
 <li>The AI classroom, the management console and the learning system are separate applications. They are not covered by this statement and have their own accessibility work.</li>
 <li>Some third-party documents, such as invoices or signed PDFs, may not be tagged for screen readers. Contact the registrar for an alternative format.</li>
 <li>We have not yet completed an external accessibility audit. We will publish the results when we do.</li>

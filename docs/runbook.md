@@ -232,13 +232,33 @@ Preview credentials when `INSTITUTION_SEED_DEMO=true`:
 
 ### 7. Console (optional)
 
+The AthenIQ console is a separate Next.js app, not the institution's registrar
+page. If `upstream/atheniq-console` is missing, `bash scripts/bootstrap.sh`
+fetches the pinned upstreams. It needs its own dependencies and first boot:
+
 ```bash
 cd upstream/atheniq-console
-PORT=3100 pnpm dev
+npm install
+set -a; . ../../.env; set +a
+AUTH_PASSWORD=atheniq-registrar \
+AUTH_EMAIL=registrar@atheniq.institute \
+AUTH_NAME=Registrar \
+AUTH_REQUIRE_2FA=off \
+ATHENIQ_BRIDGE_SERVICE_TOKEN="$BRIDGE_SERVICE_TOKEN" \
+CONSOLE_ORIGIN=http://localhost:3100 \
+npm run dev
 ```
 
+It answers at `http://localhost:3100/login`. The first boot seeds
+`upstream/atheniq-console/data/store.json`; sign in with `AUTH_EMAIL` and
+`AUTH_PASSWORD`. `AUTH_REQUIRE_2FA=on` is the production default; the local
+example turns it off so the first sign-in does not need an authenticator.
+
 The institution portal's "Console" link appears only when `CONSOLE_BASE_URL` is
-set. The portal does not proxy the console's session.
+set, and it must be a URL the browser can reach — `http://localhost:3100`
+locally, a public console hostname in production. Do not give it the Compose
+service name `http://console:3100`; that only resolves inside the Compose
+network.
 
 ### 8. Smoke test, in one pass
 
@@ -287,15 +307,18 @@ command line. Do not use one.
 
 ### The CI version of the Compose check
 
-`.github/workflows/ci.yml` runs two jobs:
+`.github/workflows/ci.yml` runs three jobs:
 
 1. **typecheck and tests** — `npm ci && npm run check` (static Compose guard,
-   `tsc` for the bridge and the institution, 43 tests).
+   `tsc` for the bridge and the institution, 51 tests).
 2. **compose interpolation** — on a Docker runner, generates a literal `.env`,
    runs `docker compose config` for the default and both opt-in profiles, then
    asserts that Compose's *resolved* model contains the `.env` values rather
    than `${…}`. That is the check the static guard cannot make: Compose itself
    performs the substitution.
+3. **institution image and health** — builds `apps/institution`, starts the
+   container with a generated session secret, waits for `/health`, and fetches
+   `/`. This is the only check that runs the production image.
 
 Reproduce it on a machine with Docker:
 

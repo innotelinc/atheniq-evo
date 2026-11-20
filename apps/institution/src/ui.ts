@@ -442,7 +442,7 @@ export function textareaField(input: {
 }
 
 export function checkboxField(input: {
-  label: string;
+  label?: string;
   /** Static copy from this repository only. Never pass visitor input here. */
   labelHtml?: string;
   name: string;
@@ -452,7 +452,7 @@ export function checkboxField(input: {
   return `<div class="field field--check${input.error ? " field--error" : ""}">
     <label class="check">
       <input type="checkbox" id="${esc(input.name)}" name="${esc(input.name)}" value="on"${input.checked ? " checked" : ""}>
-      <span>${input.labelHtml ?? esc(input.label)}</span>
+      <span>${input.labelHtml ?? esc(input.label ?? "")}</span>
     </label>
     ${input.error ? `<p class="field__error">${esc(input.error)}</p>` : ""}
   </div>`;

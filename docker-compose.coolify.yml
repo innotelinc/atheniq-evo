@@ -1,0 +1,43 @@
+# Coolify resource: AthenIQ Institute site and registrar
+#
+# One container serves two hostnames. Assign both domains to the `institution`
+# service in Coolify (Domains -> Add domain), each with internal port 8080:
+#
+#   https://atheniq.innotel.site:8080
+#   https://registrar.innotel.site:8080
+#
+# The hostname decides the surface, so `TRUST_PROXY` must stay true behind
+# Coolify's proxy. See deploy/coolify/README.md for the full procedure.
+
+services:
+  institution:
+    build:
+      context: ./apps/institution
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      INSTITUTION_ORIGIN: ${INSTITUTION_ORIGIN:-https://atheniq.innotel.site}
+      REGISTRAR_ORIGIN: ${REGISTRAR_ORIGIN:-https://registrar.innotel.site}
+      TRUST_PROXY: "true"
+      COOKIE_SECURE: "true"
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in Coolify}
+      REGISTRAR_EMAIL: ${REGISTRAR_EMAIL:-registrar@atheniq.institute}
+      REGISTRAR_PASSWORD_HASH: ${REGISTRAR_PASSWORD_HASH:-}
+      REGISTRAR_PASSWORD: ${REGISTRAR_PASSWORD:-}
+      INSTITUTION_DATA_DIR: /data
+      INSTITUTION_SEED_DEMO: "false"
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-stalwart}
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-atheniq.institute}
+      STALWART_URL: ${STALWART_URL:-https://mail.innotel.us}
+      STALWART_TOKEN: ${STALWART_TOKEN:-}
+      STALWART_QUOTA_BYTES: ${STALWART_QUOTA_BYTES:-0}
+      CONSOLE_BASE_URL: ${CONSOLE_BASE_URL:-}
+      CREDENTIAL_VERIFY_URL: ${CREDENTIAL_VERIFY_URL:-}
+    expose:
+      - "8080"
+    volumes:
+      - institution-data:/data
+
+volumes:
+  institution-data:

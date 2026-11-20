@@ -270,3 +270,53 @@ test("the seeded preview student can sign in and has a reserved mailbox", () => 
   assert.equal(result.value.mailbox.status, "reserved");
   assert.match(result.value.number, /^ATH-\d{4}-0001$/);
 });
+
+test("an activated mailbox records the provider timestamp", () => {
+  const { registry } = build();
+  const created = registry.createApplication(application());
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+  const admitted = registry.decide(created.value.id, "admit", "");
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok || !admitted.value.student) return;
+
+  const activated = registry.activateMailbox(admitted.value.student.id, new Date("2026-11-20T12:00:00Z"));
+  assert.equal(activated?.mailbox.status, "active");
+  assert.equal(activated?.mailbox.activatedAt, "2026-11-20T12:00:00.000Z");
+});
+
+test("stalwart requires a URL and an API key", () => {
+  const base = {
+    NODE_ENV: "test",
+    SESSION_SECRET: "s".repeat(48),
+    REGISTRAR_EMAIL: "registrar@atheniq.institute",
+    REGISTRAR_PASSWORD: "atheniq-registrar",
+    MAIL_PROVIDER: "stalwart",
+  };
+  assert.throws(() => loadConfig(base), /STALWART_URL/);
+  assert.throws(() => loadConfig({ ...base, STALWART_URL: "https://mail.innotel.us" }), /STALWART_TOKEN/);
+
+  const configured = loadConfig({
+    ...base,
+    STALWART_URL: "https://mail.innotel.us/",
+    STALWART_TOKEN: "API_test_token_value",
+    STALWART_QUOTA_BYTES: "1073741824",
+  });
+  assert.equal(configured.mailProvider, "stalwart");
+  assert.equal(configured.stalwartUrl, "https://mail.innotel.us");
+  assert.equal(configured.stalwartQuotaBytes, 1_073_741_824);
+});
+
+test("an unknown mail provider is refused", () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        NODE_ENV: "test",
+        SESSION_SECRET: "s".repeat(48),
+        REGISTRAR_EMAIL: "registrar@atheniq.institute",
+        REGISTRAR_PASSWORD: "atheniq-registrar",
+        MAIL_PROVIDER: "postfix",
+      }),
+    /MAIL_PROVIDER must be local or stalwart/,
+  );
+});
