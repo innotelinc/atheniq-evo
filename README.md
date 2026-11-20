@@ -127,10 +127,14 @@ Run: `npm run check`.
 - **`tsc --noEmit` is clean** for the bridge and the shared contract.
 - **Both patches apply cleanly** to pristine clones of the pinned upstream
   commits (`git apply --check`).
+- **The patched console builds**: `next build` exits 0, and
+  `/api/classrooms/launch` and `/api/internal/atheniq` appear in the route table.
+- **Live gateway**: the bridge's `/health` against the real OmniRoute answered
+  `ok` with the model catalogue, so the configured key and base URL work.
 
-Not verified here, and worth doing on a real deployment: a build of OpenMAIC and
-of the console with the patches applied (their dependency trees are large), and
-live calls to Open edX's completion and gradebook APIs and to Signara. The LMS
+Not verified here, and worth doing on a real deployment: a **build of OpenMAIC**
+with its patch (its pnpm tree is large), and live calls to Open edX's completion
+and gradebook APIs and to Signara — those were exercised against fakes only. The LMS
 client's request shapes follow the published API (completion-batch takes a
 `blocks` map; the gradebook write is `bulk-update` and needs a numeric user id,
 which Open edX does not expose over REST — hence `LMS_USER_MAP_PATH`). Treat the
