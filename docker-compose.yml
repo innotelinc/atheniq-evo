@@ -107,6 +107,48 @@ services:
         condition: service_started
     networks: [atheniq]
 
+  # The institution: the public site on atheniq.institute and the registrar on
+  # registrar.atheniq.institute, one process. Host routing means the edge must
+  # preserve the Host header and terminate TLS for both names.
+  institution:
+    build:
+      context: ./apps/institution
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 8080
+      NODE_ENV: production
+      INSTITUTION_ORIGIN: ${INSTITUTION_ORIGIN:-https://atheniq.institute}
+      REGISTRAR_ORIGIN: ${REGISTRAR_ORIGIN:-https://registrar.atheniq.institute}
+      INSTITUTION_DATA_DIR: /data
+      # Signs student and staff session cookies. Required; 32+ characters.
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      REGISTRAR_EMAIL: ${REGISTRAR_EMAIL:-registrar@atheniq.institute}
+      # Set either the scrypt hash (preferred) or a bootstrap password. The
+      # service refuses to start in production when both are empty.
+      REGISTRAR_PASSWORD: ${REGISTRAR_PASSWORD:-}
+      REGISTRAR_PASSWORD_HASH: ${REGISTRAR_PASSWORD_HASH:-}
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-atheniq.institute}
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-local}
+      ATHENIQ_BRIDGE_URL: http://bridge:8787
+      ATHENIQ_BRIDGE_SERVICE_TOKEN: ${BRIDGE_SERVICE_TOKEN:?set BRIDGE_SERVICE_TOKEN in .env}
+      CONSOLE_BASE_URL: http://console:3100
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      INSTITUTION_SEED_DEMO: ${INSTITUTION_SEED_DEMO:-false}
+    volumes:
+      - institution-data:/data
+    ports:
+      - "${INSTITUTION_PORT:-8080}:8080"
+    depends_on:
+      bridge:
+        condition: service_started
+    networks: [atheniq]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -178,6 +220,7 @@ volumes:
   bridge-data:
   openmaic-data:
   console-data:
+  institution-data:
   postgres-data:
 
 networks:

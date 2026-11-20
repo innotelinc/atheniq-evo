@@ -22,8 +22,11 @@ answers are decided:
 
 | Fact | Owner | Everyone else |
 | --- | --- | --- |
+| A person applied, was admitted, and their student number | Institution registry (`apps/institution`) | the console receives the `lrn_…` id; the bridge never sees a password |
+| A student's portal account and `@atheniq.institute` address | Institution registry | the mail provider activates the mailbox; nothing else reads the password |
 | A person exists, their name and email | Console | receives an id and display data |
 | Course catalog, price, degree plans | Console | LMS receives an OLX package |
+| Registration for a term course | Institution registry, then the LMS | the registrar reconciles; classroom launch stays with the console |
 | Courseware, progress, gradebook | Open edX LMS | bridge writes completion + optional grade |
 | In-class instruction, what the classroom observed | OpenMAIC → bridge ledger | console records the resulting completion |
 | Eligibility for a credential | Console (`lib/eligibility.ts`) | bridge asks, never decides |
@@ -32,6 +35,12 @@ answers are decided:
 
 The rule behind the table: **the system that owns a fact is the only one that may
 decide it.** The bridge orchestrates and remembers; it does not overrule.
+
+The institution surface is deliberately separate from the console. The
+institution owns the facts only it can own — an application, an admission, a
+student number, an address — and reads the console and bridge for academic
+facts. `docs/institution.md` describes the lifecycle, the two hostnames and the
+production hardening order.
 
 ## Flow 1 — launch
 
@@ -97,7 +106,7 @@ Four properties this ordering buys:
    and `learnerId` are read from the ledger entry the launch created, and a
    mismatch is a 409. A browser editing JSON cannot move a completion to another
    learner or course.
-2. **A duplicate cannot award twice.** The key is reserved in one serialised
+2. **A duplicate cannot award twice.** The key is reserved in one serialized
    write *before* any network call, so two concurrent callbacks cannot both see
    "not yet processed".
 3. **Eligibility is not re-derived.** The console answers with what the
@@ -108,7 +117,7 @@ Four properties this ordering buys:
 
 ## Failure semantics
 
-| Failure | Behaviour | Why |
+| Failure | Behavior | Why |
 | --- | --- | --- |
 | OpenMAIC unreachable at launch | 502, no classroom recorded | nothing to complete later |
 | LMS unreachable | completion stored `partial`, steps say `failed` | the observation is not lost; retry writes it |

@@ -6,7 +6,7 @@
  * book of record?" — so the bridge keeps that ledger, and it is what makes the
  * completion callback idempotent.
  *
- * It is a JSON file with serialised, atomic writes, because one bridge per
+ * It is a JSON file with serialized, atomic writes, because one bridge per
  * estate is the intended shape: the ledger is a few thousand small rows, not a
  * database. The interface is deliberately narrow so a Postgres implementation
  * can replace it without touching a route.

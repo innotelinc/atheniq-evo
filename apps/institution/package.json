@@ -1,0 +1,16 @@
+{
+  "name": "@atheniq/institution",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AthenIQ Institute — public site, admissions, student portal and registrar, one process on two hostnames.",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "dev": "node --watch src/main.ts",
+    "test": "node --test test/institution.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

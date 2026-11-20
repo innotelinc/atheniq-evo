@@ -1,0 +1,188 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: typecheck and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  compose:
+    name: compose interpolation (Compose resolver)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # A literal .env is what production actually mounts. Generate one here so
+      # `docker compose config` has every required value and never falls back to
+      # a placeholder.
+      - name: Write a literal .env
+        run: |
+          node -e '
+          const fs = require("node:fs");
+          const crypto = require("node:crypto");
+          const values = {
+            BRIDGE_JWT_SECRET: crypto.randomBytes(32).toString("hex"),
+            BRIDGE_SERVICE_TOKEN: crypto.randomBytes(24).toString("hex"),
+            BRIDGE_HOOK_SECRET: crypto.randomBytes(24).toString("hex"),
+            POSTGRES_PASSWORD: crypto.randomBytes(16).toString("hex"),
+            SESSION_SECRET: crypto.randomBytes(32).toString("hex"),
+            REGISTRAR_PASSWORD: crypto.randomBytes(18).toString("hex"),
+            OMNIROUTE_API_KEY: "ci-not-a-real-key",
+          };
+          const lines = fs.readFileSync(".env.example", "utf8").split(/\r?\n/);
+          const out = lines.map((line) => {
+            const match = /^([A-Z0-9_]+)=/.exec(line);
+            if (match && values[match[1]]) return `${match[1]}="${values[match[1]]}"`;
+            return line;
+          });
+          fs.writeFileSync(".env", `${out.join("\n")}\n`);
+          '
+
+      # The static guard still runs: it is the only check that can see inside a
+      # file passed via env_file, which Compose copies verbatim.
+      - name: Static env_file guard
+        run: npm run check:compose
+
+      - name: Docker Compose is available
+        run: docker compose version
+
+      - name: Compose resolves the default profile
+        run: docker compose config --quiet
+
+      - name: Compose resolves the opt-in profiles
+        run: |
+          docker compose --profile lms config --quiet
+          docker compose --profile signara config --quiet
+
+      # This is the check Compose itself performs. If a derived value lived in
+      # env_file, it would not appear in the resolved environment at all; if it
+      # lived in `environment:`, Compose substitutes it here.
+      - name: Compose expanded every derived value
+        run: |
+          # Export the same literal values Compose reads, so the assertion can
+          # compare Compose's resolved model with the file that fed it.
+          set -a
+          . ./.env
+          set +a
+          docker compose config --format json > compose.resolved.json
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const resolved = JSON.parse(fs.readFileSync("compose.resolved.json", "utf8"));
+          const failures = [];
+
+          const expected = {
+            "openmaic": {
+              ATHENIQ_BRIDGE_JWT_SECRET: process.env.BRIDGE_JWT_SECRET,
+              ATHENIQ_BRIDGE_HOOK_SECRET: process.env.BRIDGE_HOOK_SECRET,
+            },
+            "institution": {
+              SESSION_SECRET: process.env.SESSION_SECRET,
+              REGISTRAR_PASSWORD: process.env.REGISTRAR_PASSWORD,
+              ATHENIQ_BRIDGE_SERVICE_TOKEN: process.env.BRIDGE_SERVICE_TOKEN,
+            },
+            "console": {
+              ATHENIQ_BRIDGE_SERVICE_TOKEN: process.env.BRIDGE_SERVICE_TOKEN,
+            },
+          };
+
+          for (const [service, pairs] of Object.entries(expected)) {
+            const environment = resolved.services?.[service]?.environment ?? {};
+            for (const [name, want] of Object.entries(pairs)) {
+              const got = String(environment[name] ?? "");
+              if (!want) failures.push(`${name}: the workflow did not generate a value`);
+              else if (got !== want) failures.push(`${service}.${name} is not the value from .env`);
+              if (got.includes("${")) failures.push(`${service}.${name} still contains a literal \${…}`);
+            }
+          }
+
+          for (const [name, service] of Object.entries(resolved.services ?? {})) {
+            if (!service.env_file) continue;
+            for (const entry of service.env_file) {
+              const path = typeof entry === "string" ? entry : entry.path;
+              if (path !== ".env") failures.push(`${name} uses env_file ${path}; only .env is literal`);
+            }
+          }
+
+          const rendered = JSON.stringify(resolved);
+          if (rendered.includes("${")) failures.push("the resolved model still contains an unexpanded ${…}");
+
+          if (failures.length > 0) {
+            for (const failure of failures) console.error(`compose: ${failure}`);
+            process.exit(1);
+          }
+          console.log("compose: every derived value is expanded by Compose, and every env_file is .env");
+          NODE
+
+      - name: Show what Compose resolved for the bridge secret
+        run: docker compose config | grep -A2 ATHENIQ_BRIDGE_JWT_SECRET
+
+  institution-image:
+    name: institution image and health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the institution image
+        run: docker build --tag atheniq-institution:ci apps/institution
+
+      - name: Start the container
+        run: |
+          docker run --detach --name atheniq-institution \
+            --publish 8080:8080 \
+            --env NODE_ENV=production \
+            --env PORT=8080 \
+            --env INSTITUTION_ORIGIN=https://atheniq.institute \
+            --env REGISTRAR_ORIGIN=https://registrar.atheniq.institute \
+            --env SESSION_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')" \
+            --env REGISTRAR_PASSWORD=ci-registrar-password \
+            --env COOKIE_SECURE=true \
+            --env INSTITUTION_SEED_DEMO=false \
+            atheniq-institution:ci
+
+      - name: Wait for /health
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8080/health \
+              | grep --quiet '"service":"atheniq-institution"'; then
+              echo "healthy after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "health check did not pass"
+          docker logs atheniq-institution
+          exit 1
+
+      - name: Legal and portal pages respond
+        run: |
+          for path in / /privacy /terms /accessibility /portal; do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:8080${path}")"
+            echo "${path} ${status}"
+            test "${status}" = "200"
+          done
+
+      - name: Container logs
+        if: always()
+        run: docker logs atheniq-institution
+
+      - name: Remove the container
+        if: always()
+        run: docker rm --force atheniq-institution

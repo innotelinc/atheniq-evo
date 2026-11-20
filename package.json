@@ -15,10 +15,12 @@
   "scripts": {
     "start": "node apps/bridge/src/main.ts",
     "dev": "node --watch apps/bridge/src/main.ts",
-    "test": "node --test apps/bridge/test/auth.test.ts apps/bridge/test/flow.test.ts",
-    "typecheck": "tsc -p apps/bridge/tsconfig.json --noEmit",
+    "test": "node --test apps/bridge/test/auth.test.ts apps/bridge/test/flow.test.ts apps/institution/test/institution.test.ts",
+    "typecheck": "tsc -p apps/bridge/tsconfig.json --noEmit && tsc -p apps/institution/tsconfig.json --noEmit",
     "check:compose": "node scripts/check-compose-env.mjs",
     "check": "npm run check:compose && npm run typecheck && npm test",
+    "site": "node apps/institution/src/main.ts",
+    "site:dev": "node --watch apps/institution/src/main.ts",
     "bootstrap": "bash scripts/bootstrap.sh"
   },
   "devDependencies": {

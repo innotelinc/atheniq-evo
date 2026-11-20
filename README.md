@@ -3,9 +3,11 @@
 The AthenIQ estate, integrated: **Open edX** delivers the courseware, **OpenMAIC**
 runs in-class AI instruction, **Signara** signs and issues certificates and
 degrees, and the **AthenIQ console** is the management console and student
-portal. This repository is the seam between them — one service, one contract and
-one set of patches — so a learner is one person, a course is one course and a
-completion becomes a credential exactly once.
+portal. **AthenIQ Institute** — the public university site, admissions, student
+accounts and the registrar — is `apps/institution`, on `atheniq.institute` and
+`registrar.atheniq.institute`. This repository is the seam between them — one
+service, one contract and one set of patches — so a learner is one person, a
+course is one course and a completion becomes a credential exactly once.
 
 ```
                        ┌──────────────────────────────┐
@@ -54,13 +56,18 @@ did not finish — the fix for "the LMS token was missing".
 bash scripts/bootstrap.sh     # fetch the four upstreams at the pinned commits, apply patches
 cp .env.example .env          # then fill in the secrets (see below)
 npm install
-npm run check                 # typecheck + the bridge's integration suite
-docker compose up -d          # bridge + AI classroom + console
+npm run check                 # typecheck + the integration suites
+docker compose up -d          # bridge + AI classroom + console + institution
 ```
 
-`npm run check` is the honest gate: a Compose guard, `tsc` over the bridge, then
-29 tests that start the real HTTP server against fake OpenMAIC, LMS, console and
-OmniRoute, and assert on what the bridge *sent*.
+Then open `http://atheniq.localhost:8080` for the public site and
+`http://registrar.localhost:8080` for the registrar. Both are the one
+`institution` service, routed by hostname.
+
+`npm run check` is the honest gate: a Compose guard, `tsc` over the bridge and
+the institution, 29 bridge tests that start the real HTTP server against fake
+OpenMAIC, LMS, console and OmniRoute, and 14 institution tests covering the
+application → admission → account → registration lifecycle.
 
 ### One Compose rule
 
@@ -99,6 +106,13 @@ apps/bridge/            the integration service — no runtime dependencies
   src/ledger.ts         the AI-instruction ledger, atomic JSON, one writer
   src/clients/          Open edX · OpenMAIC · console · OmniRoute
   test/                 end-to-end over real HTTP, plus token rules
+apps/institution/       the university — public site, portal, registrar
+  src/content.ts        programs, courses, terms, faculty, admissions copy
+  src/registry.ts       apply → admit → issue account → register
+  src/store.ts          the institution registry (atomic JSON, one writer)
+  src/server.ts         one process, two hostnames, no framework
+  src/views/            public · portal · registrar
+  public/               one stylesheet, one small script, no build step
 packages/contracts/     the wire contract, copied verbatim by both patches
 patches/
   openmaic/             identity method, completion route, reporter component
@@ -108,7 +122,7 @@ deploy/
   openedx/              LMS settings (YAML, mounted) and the service-user script
 scripts/bootstrap.sh    fetch pinned upstreams, apply patches, check they still apply
 upstream.lock.json      the four repositories and the exact commits
-docs/                   architecture, contract, runbook
+docs/                   architecture, contract, runbook, institution
 ```
 
 `upstream/` is fetched, never committed: Open edX alone is far too large to
@@ -130,18 +144,23 @@ vendor. `upstream.lock.json` pins what the patches were generated against, and
 
 Run: `npm run check`.
 
-- **29 tests pass**, over real HTTP, against fake upstreams: launch, generation,
-  full completion fan-out, replay, signed-callback refusal, stale-signature
-  refusal, course/learner mismatch, unknown classroom, per-step retry, credential
-  idempotency, gateway model list, and the token rules (expiry, audience, issuer,
-  tampering, algorithm, weak signature).
+- **29 bridge tests pass**, over real HTTP, against fake upstreams: launch,
+  generation, full completion fan-out, replay, signed-callback refusal,
+  stale-signature refusal, course/learner mismatch, unknown classroom, per-step
+  retry, credential idempotency, gateway model list, and the token rules
+  (expiry, audience, issuer, tampering, algorithm, weak signature).
+- **14 institution tests pass**: curriculum integrity, application validation,
+  admission issuing one account and a unique `@atheniq.institute` address,
+  temporary-password sign-in and forced change, seat accounting, full-studio
+  refusal, waitlist refusal, salted password hashes, and session role/tamper
+  rules.
 - **`tsc --noEmit` is clean** for the bridge and the shared contract.
 - **Both patches apply cleanly** to pristine clones of the pinned upstream
   commits (`git apply --check`).
 - **The patched console builds**: `next build` exits 0, and
   `/api/classrooms/launch` and `/api/internal/atheniq` appear in the route table.
 - **Live gateway**: the bridge's `/health` against the real OmniRoute answered
-  `ok` with the model catalogue, so the configured key and base URL work.
+  `ok` with the model catalog, so the configured key and base URL work.
 
 Not verified here, and worth doing on a real deployment: a **build of OpenMAIC**
 with its patch (its pnpm tree is large), and live calls to Open edX's completion
@@ -154,7 +173,7 @@ first live run as the contract test for those two, and see `docs/runbook.md`.
 ## Limits, stated plainly
 
 - **The bridge's ledger is the source of truth for AI instruction**, in one JSON
-  file with serialised atomic writes. That is right for one bridge per estate; a
+  file with serialized atomic writes. That is right for one bridge per estate; a
   fleet needs the Postgres implementation of `lib/ledger.ts`, which is why the
   interface is narrow.
 - **Grades need a user-id map.** Without `LMS_USER_MAP_PATH` the bridge writes
@@ -163,5 +182,13 @@ first live run as the contract test for those two, and see `docs/runbook.md`.
 - **Signara key absent** means awards are held as `queued_local` by the console —
   the design the console already documents. Nothing is lost; re-submitting picks
   up where it stopped.
-- **No public sign-up.** Learners come from the console; the bridge never creates
-  a person.
+- **No self-service account.** Anyone can apply on the public site, but an
+  application creates no account. Admission is the only act that mints a student
+  number, a portal account and a mailbox reservation, and the temporary password
+  is shown once.
+- **The `@atheniq.institute` address is reserved, not yet delivered.** Mailbox
+  hosting is a provider integration that has not been chosen; the registry tracks
+  `reserved | active | disabled` so connecting one is a sync, not a migration.
+- **The institution registry is one JSON file, one writer.** Right for one
+  institute on one process; `docs/institution.md` names the migration path and
+  the production hardening order.

@@ -53,6 +53,261 @@ every check should be `ok`; `not_configured` means a variable is missing, and
    course is in the catalog and the certificate was requested — an award with a
    verify id.
 
+## Local preview without Docker
+
+The Compose stack is the deployment. This is the **development** path: the same
+four processes, run directly, for a machine with no container runtime. It will
+not reproduce image builds or the Compose network — it reproduces the
+behavior, which is what a preview is for.
+
+| Process | Port | What it is |
+| --- | --- | --- |
+| institution | 8080 | public site + student portal, registrar at `registrar.localhost:8080` |
+| bridge | 8787 | identity, launch, completion fan-out |
+| OpenMAIC | 3000 | AI classroom (needs Postgres) |
+| Postgres | 55432 | OpenMAIC's database, portable build |
+| console | 3100 | academic record and awards (optional for this preview) |
+
+### 1. Fetch and patch the upstreams
+
+```bash
+bash scripts/bootstrap.sh          # clones the four pinned repositories
+npm install                        # bridge + institution workspaces
+```
+
+`upstream/OpenMAIC` and `upstream/atheniq-console` are the two that need a
+build. The institution service has no dependencies and no build step.
+
+### 2. Secrets in `.env`
+
+```bash
+cp .env.example .env
+openssl rand -hex 32   # BRIDGE_JWT_SECRET (same value as ATHENIQ_BRIDGE_JWT_SECRET)
+openssl rand -hex 24   # BRIDGE_SERVICE_TOKEN (same value as CONSOLE_SERVICE_TOKEN)
+openssl rand -hex 24   # BRIDGE_HOOK_SECRET (same value as ATHENIQ_BRIDGE_HOOK_SECRET)
+openssl rand -hex 32   # SESSION_SECRET (institution session cookies)
+```
+
+For a local preview also set, in `.env`:
+
+```dotenv
+INSTITUTION_SEED_DEMO=true     # one demo applicant, one demo student
+COOKIE_SECURE=false            # the preview is http, so a Secure cookie is never stored
+REGISTRAR_PASSWORD=atheniq-registrar
+```
+
+`.env` is gitignored and mode 600. Nothing in it is a real credential until you
+put one there.
+
+### 3. Postgres for OpenMAIC
+
+Any local Postgres works. The one used here is a portable build in a gitignored
+directory, so nothing is installed system-wide:
+
+```bash
+mkdir -p .local/dev-postgres && cd .local/dev-postgres
+npm init -y
+npm i --no-save embedded-postgres@18.7.0-beta.19
+```
+
+`start.mjs`:
+
+```js
+import EmbeddedPostgres from "embedded-postgres";
+
+const pg = new EmbeddedPostgres({
+  databaseDir: "./pgdata",
+  user: "openmaic",
+  password: "openmaic",
+  port: 55432,
+  persistent: true,
+  // Windows initdb defaults to WIN1252, which cannot store the multilingual
+  // content a classroom generates. Re-initialise with these flags if you see
+  // encoding errors; delete ./pgdata first.
+  initdbFlags: ["--encoding=UTF8", "--locale=C"],
+});
+
+await pg.initialise();
+await pg.start();
+await pg.createDatabase("openmaic");
+console.log("postgres on 127.0.0.1:55432");
+```
+
+```bash
+node start.mjs      # leave running
+```
+
+**Gotcha:** `initdb` only runs on an empty directory. If the cluster was created
+before you added the encoding flags, stop it, delete `pgdata/`, and start again.
+A cluster created as WIN1252 cannot be fixed by a connection string.
+
+### 4. OpenMAIC
+
+Install once, with a global pnpm: its `postinstall` shells out to `pnpm run
+build:packages`, and a local-only pnpm is not on `PATH` during install.
+
+```bash
+npm i -g pnpm@10.28.0
+cd upstream/OpenMAIC
+pnpm install --frozen-lockfile
+```
+
+`.env.local` (gitignored) — OpenMAIC reads this, not the estate's `.env`:
+
+```dotenv
+DATABASE_URL=postgres://openmaic:openmaic@127.0.0.1:55432/openmaic
+ATHENIQ_BRIDGE_JWT_SECRET=<same as BRIDGE_JWT_SECRET>
+ATHENIQ_BRIDGE_URL=http://127.0.0.1:8787
+ATHENIQ_BRIDGE_HOOK_SECRET=<same as BRIDGE_HOOK_SECRET>
+OMNIROUTE_BASE_URL=https://gateway.innotel.us/v1
+OMNIROUTE_API_KEY=<the estate key>
+```
+
+Typecheck and build with a larger heap. The TypeScript project is big enough to
+run the default heap out of memory; this is not an optional nicety.
+
+```bash
+NODE_OPTIONS=--max-old-space-size=6144 npx tsc --noEmit -p tsconfig.json
+NODE_OPTIONS=--max-old-space-size=6144 pnpm build     # ~15 minutes on a laptop
+```
+
+Run the production build, not `pnpm dev`: the preview then exercises the same
+compiled routes the container will.
+
+```bash
+PORT=3000 HOSTNAME=127.0.0.1 pnpm start
+```
+
+The `ACCESS_CODE` warning at boot is expected. Access is gated by the signed
+classroom cookie from the bridge, not by OpenMAIC's own access code.
+
+### 5. Bridge
+
+```bash
+PORT=8787 node --env-file=.env apps/bridge/src/main.ts
+```
+
+**Gotcha:** some shells export `PORT=0`. Node's `--env-file` never overrides a
+variable that already exists in the environment, so an exported `PORT=0` wins
+over `.env` and the bridge asks the OS for an ephemeral port. Pass `PORT=8787`
+explicitly every time (the same applies to the institution and OpenMAIC). Prove
+where it actually listens:
+
+```bash
+curl -s http://127.0.0.1:8787/health | jq '{contractVersion, checks}'
+```
+
+### 6. Institution site and registrar
+
+```bash
+PORT=8080 \
+SESSION_SECRET=<32+ chars> \
+REGISTRAR_PASSWORD=atheniq-registrar \
+INSTITUTION_SEED_DEMO=true \
+COOKIE_SECURE=false \
+node --env-file=.env apps/institution/src/main.ts
+```
+
+`INSTITUTION_ORIGIN` defaults to `http://localhost:8080` and `REGISTRAR_ORIGIN`
+to `http://registrar.localhost:8080`. Both are served by this one process; the
+surface is chosen from the `Host` header.
+
+- Public site: <http://atheniq.localhost:8080> (or `http://127.0.0.1:8080`)
+- Registrar: <http://registrar.localhost:8080>
+
+Modern browsers resolve `*.localhost` to loopback. If yours does not, add
+`127.0.0.1 atheniq.localhost registrar.localhost` to your hosts file, or use
+curl with an explicit host:
+
+```bash
+curl -s -H 'Host: registrar.localhost' http://127.0.0.1:8080/signin | grep -o '<title>[^<]*'
+```
+
+Preview credentials when `INSTITUTION_SEED_DEMO=true`:
+
+| Surface | Email | Password |
+| --- | --- | --- |
+| Student portal | `nadia.rahman@atheniq.institute` | `atheniq-demo` |
+| Registrar | `registrar@atheniq.institute` | `REGISTRAR_PASSWORD` |
+
+### 7. Console (optional)
+
+```bash
+cd upstream/atheniq-console
+PORT=3100 pnpm dev
+```
+
+The institution portal's "Console" link appears only when `CONSOLE_BASE_URL` is
+set. The portal does not proxy the console's session.
+
+### 8. Smoke test, in one pass
+
+```bash
+for path in / /academics /academics/msc-machine-intelligence /admissions \
+            /admissions/apply /about /verify /portal /health; do
+  printf '%-42s %s\n' "$path" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080$path")"
+done
+
+# The registrar is the same process on a different Host.
+for path in / /applications /students; do
+  printf 'registrar %-30s %s\n' "$path" "$(curl -s -o /dev/null -w '%{http_code}' \
+    -H 'Host: registrar.localhost' "http://127.0.0.1:8080$path")"
+done
+```
+
+`/` and `/signin` render the registrar sign-in page; other unauthenticated
+registrar paths answer `303` to `/signin`. A `500` means a view or the registry
+failed — read the process output, not the HTML.
+
+### Stopping the preview
+
+Stop each process by the PID you started, never by name:
+
+```bash
+kill <pid>              # the recorded PID
+pkill -P <pid>          # its children, if it spawned any
+```
+
+A pattern kill (`pkill -f`, `pgrep -f | xargs kill`) can match the agent's own
+command line. Do not use one.
+
+### What differs from Compose
+
+- No image build, so a missing `Dockerfile` dependency appears here as "works on
+  my machine" and only in CI or a real host as a build failure.
+- Services reach each other on `127.0.0.1`, not the Compose service names. The
+  bridge's `OPENMAIC_BASE_URL` and the institution's `ATHENIQ_BRIDGE_URL` must be
+  loopback URLs locally and `http://openmaic:3000` / `http://bridge:8787` in
+  Compose.
+- The classroom launch cookie needs a shared parent domain in production
+  (`CLASSROOM_COOKIE_DOMAIN=.atheniq.institute`). Locally, `localhost` is the
+  shared parent; do not set the domain.
+- The registrar and public site share one registry file. If they show different
+  data, they are reading different `INSTITUTION_DATA_DIR`s.
+
+### The CI version of the Compose check
+
+`.github/workflows/ci.yml` runs two jobs:
+
+1. **typecheck and tests** — `npm ci && npm run check` (static Compose guard,
+   `tsc` for the bridge and the institution, 43 tests).
+2. **compose interpolation** — on a Docker runner, generates a literal `.env`,
+   runs `docker compose config` for the default and both opt-in profiles, then
+   asserts that Compose's *resolved* model contains the `.env` values rather
+   than `${…}`. That is the check the static guard cannot make: Compose itself
+   performs the substitution.
+
+Reproduce it on a machine with Docker:
+
+```bash
+docker compose config --quiet
+docker compose config | grep -A2 ATHENIQ_BRIDGE_JWT_SECRET
+```
+
+The static guard remains the only check that can see inside an `env_file`,
+because `docker compose config` does not print `env_file` contents. The two
+checks are complementary, and both are required.
+
 ## Deploy order for a change
 
 The three patched services and the bridge form a chain of trust:
