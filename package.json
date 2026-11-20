@@ -1,0 +1,27 @@
+{
+  "name": "atheniq-evo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AthenIQ Evo — Open edX LMS + OpenMAIC AI classrooms + Signara credentials + AthenIQ console, joined by one integration bridge.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "node apps/bridge/src/main.ts",
+    "dev": "node --watch apps/bridge/src/main.ts",
+    "test": "node --test apps/bridge/test/",
+    "typecheck": "tsc -p apps/bridge/tsconfig.json --noEmit",
+    "check": "npm run typecheck && npm test",
+    "bootstrap": "bash scripts/bootstrap.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

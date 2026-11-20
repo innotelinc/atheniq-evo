@@ -1,0 +1,147 @@
+# atheniq-evo — the estate, locally.
+#
+# The default profile is the integration: the bridge, the AI classroom and the
+# console, on one network, wired to each other and to OmniRoute.
+#
+# Open edX and Signara are large and have their own upstream deployment guides,
+# so they are opt-in profiles rather than default services:
+#
+#   docker compose up -d                          # bridge + classroom + console
+#   docker compose --profile lms up -d            # + Open edX LMS and CMS
+#   docker compose --profile signara up -d        # + Signara's API
+#
+# Every secret comes from .env. Nothing here holds a key in clear text.
+
+name: atheniq-evo
+
+x-atheniq-env: &atheniq-env
+  ATHENIQ_ORG: ${ATHENIQ_ORG:-AthenIQ Institute}
+
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: apps/bridge/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 8787
+      BRIDGE_ORIGIN: ${BRIDGE_ORIGIN:-http://localhost:8787}
+      BRIDGE_DATA_DIR: /data
+      OPENMAIC_BASE_URL: http://openmaic:3000
+      CONSOLE_BASE_URL: http://console:3100
+    volumes:
+      - bridge-data:/data
+    ports:
+      - "${BRIDGE_PORT:-8787}:8787"
+    networks: [atheniq]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  openmaic:
+    build:
+      context: ./upstream/OpenMAIC
+    restart: unless-stopped
+    env_file:
+      - .env
+      - deploy/openmaic/env.fragment
+    environment:
+      <<: *atheniq-env
+      DATABASE_URL: postgres://openmaic:${POSTGRES_PASSWORD:-openmaic-dev}@postgres:5432/openmaic
+      ATHENIQ_BRIDGE_URL: http://bridge:8787
+      NODE_ENV: production
+    volumes:
+      - openmaic-data:/app/data
+      - ./deploy/openmaic/openmaic.yml:/app/openmaic.yml:ro
+    ports:
+      - "${OPENMAIC_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bridge:
+        condition: service_started
+    networks: [atheniq]
+
+  console:
+    build:
+      context: ./upstream/atheniq-console
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *atheniq-env
+      ATHENIQ_BRIDGE_URL: http://bridge:8787
+      ATHENIQ_CLASSROOM_COOKIE_DOMAIN: ${CLASSROOM_COOKIE_DOMAIN:-}
+      LMS_BASE_URL: ${LMS_PUBLIC_URL:-http://localhost:18000}
+      CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:3100}
+    volumes:
+      - console-data:/app/data
+    ports:
+      - "${CONSOLE_PORT:-3100}:3100"
+    depends_on:
+      bridge:
+        condition: service_started
+    networks: [atheniq]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: openmaic
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openmaic-dev}
+      POSTGRES_DB: openmaic
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openmaic -d openmaic"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [atheniq]
+
+  # --------------------------------------------------------------- profiles --
+  # Open edX is a multi-service deployment (LMS, CMS, workers, MySQL, MongoDB,
+  # Redis, Elasticsearch). This profile runs the two Django processes against
+  # the fork; production uses the fork's own image build. See docs/runbook.md.
+  lms:
+    profiles: [lms]
+    build:
+      context: ./upstream/openedx-platform
+    command: ["gunicorn", "--bind", "0.0.0.0:18000", "lms.wsgi:application"]
+    env_file: [.env, deploy/openedx/lms.env.fragment]
+    ports:
+      - "18000:18000"
+    networks: [atheniq]
+
+  cms:
+    profiles: [lms]
+    build:
+      context: ./upstream/openedx-platform
+    command: ["gunicorn", "--bind", "0.0.0.0:18010", "cms.wsgi:application"]
+    env_file: [.env, deploy/openedx/lms.env.fragment]
+    ports:
+      - "18010:18010"
+    networks: [atheniq]
+
+  # Signara's API. Its database, object storage and OIDC provider are its own
+  # deployment's concern (upstream ships docker-compose.prod.yml).
+  signara-api:
+    profiles: [signara]
+    build:
+      context: ./upstream/signara
+    env_file: [.env, deploy/signara/env.fragment]
+    ports:
+      - "4000:4000"
+    networks: [atheniq]
+
+volumes:
+  bridge-data:
+  openmaic-data:
+  console-data:
+  postgres-data:
+
+networks:
+  atheniq:
+    driver: bridge

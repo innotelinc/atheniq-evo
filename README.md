@@ -1,0 +1,152 @@
+# AthenIQ Evo
+
+The AthenIQ estate, integrated: **Open edX** delivers the courseware, **OpenMAIC**
+runs in-class AI instruction, **Signara** signs and issues certificates and
+degrees, and the **AthenIQ console** is the management console and student
+portal. This repository is the seam between them — one service, one contract and
+one set of patches — so a learner is one person, a course is one course and a
+completion becomes a credential exactly once.
+
+```
+                       ┌──────────────────────────────┐
+   registrar / student │  atheniq-console (Next.js)   │  console + portal
+                       │  courses · degrees · awards  │  academic record
+                       └───────────┬──────────────────┘
+                                   │ service token
+                        ┌──────────▼───────────┐
+                        │   atheniq-bridge     │  identity, launch, ledger
+                        │  apps/bridge         │  completion fan-out
+                        └──┬────────┬────────┬─┘
+        signed classroom   │        │        │  service token
+        token (JWT, HS256) │        │        └──────────────┐
+                  ┌────────▼──────┐ │                       │
+                  │   OpenMAIC    │ │ REST                  ▼
+                  │ AI classroom  │ │            ┌────────────────────┐
+                  └───────┬───────┘ │            │ atheniq-console    │
+                          │         │            │ /api/internal/…    │
+            HMAC completion│        │            └─────────┬──────────┘
+                          └────────►│                      │ X-API-Key
+                                    ▼                      ▼
+                        ┌───────────────────┐   ┌────────────────────┐
+                        │ Open edX LMS      │   │ Signara            │
+                        │ completion+grade  │   │ documents, signing │
+                        └───────────────────┘   │ certificates       │
+                                                └────────────────────┘
+```
+
+## The four flows
+
+| Flow | Who starts it | What happens |
+| --- | --- | --- |
+| **Launch** | A learner presses *AI classroom* in the portal | The console asks the bridge to sign them in; the bridge mints a 15-minute token pinned to that learner and course; the console sets it as an HttpOnly cookie and redirects to OpenMAIC, which resolves the *same* owner id the rest of the estate uses. |
+| **Generate** | The console, for a course | The bridge calls OpenMAIC's classroom generator with that token, gets a stage back, and records the classroom so a later completion can be tied to it. |
+| **Complete** | The classroom | OpenMAIC reports to the bridge with an HMAC-signed body. The bridge mines the learner and course from its own ledger (never the body), then writes the LMS completion, the grade override, closes the enrollment in the console, and awards a certificate when the console says the learner is eligible. |
+| **Award** | The console, or the bridge | The console renders the PDF and runs Signara's upload → signing request → typed signature flow. The bridge never re-implements eligibility or signing; it asks. |
+
+A completion is idempotent by `classroomId:learnerId`. Pressing *Finish module*
+twice, or a retry after a dropped response, returns the first result rather than
+a second certificate. `POST /v1/completions?retry=1` re-runs only the steps that
+did not finish — the fix for "the LMS token was missing".
+
+## Quick start
+
+```bash
+bash scripts/bootstrap.sh     # fetch the four upstreams at the pinned commits, apply patches
+cp .env.example .env          # then fill in the secrets (see below)
+npm install
+npm run check                 # typecheck + the bridge's integration suite
+docker compose up -d          # bridge + AI classroom + console
+```
+
+`npm run check` is the honest gate: `tsc` over the bridge, then 29 tests that
+start the real HTTP server against fake OpenMAIC, LMS, console and OmniRoute, and
+assert on what the bridge *sent*.
+
+Fill in `.env` before starting anything with real traffic:
+
+| Variable | What it is |
+| --- | --- |
+| `BRIDGE_JWT_SECRET` | HS256 key for classroom tokens. 32+ chars, generated (`openssl rand -hex 32`). The same value goes to OpenMAIC as `ATHENIQ_BRIDGE_JWT_SECRET`. |
+| `BRIDGE_SERVICE_TOKEN` / `CONSOLE_SERVICE_TOKEN` | The console ↔ bridge service token. One value, both variables. |
+| `BRIDGE_HOOK_SECRET` | HMAC key for completion callbacks. Same value in OpenMAIC as `ATHENIQ_BRIDGE_HOOK_SECRET`. |
+| `OMNIROUTE_API_KEY` | The one model-gateway key for the whole estate. Never in client code. |
+| `LMS_API_TOKEN` | An Open edX token with course-author rights, created by `deploy/openedx/provision-bridge.sh`. |
+| `SIGNARA_API_KEY` | The console's Signara key (document and signature scopes). |
+
+The bridge **refuses to start** without strong `BRIDGE_JWT_SECRET`,
+`BRIDGE_SERVICE_TOKEN` and `BRIDGE_HOOK_SECRET`, and refuses a corrupt ledger.
+Starting with an empty signing key would mint classroom tokens anyone can forge.
+
+## What is in here
+
+```
+apps/bridge/            the integration service — no runtime dependencies
+  src/app.ts            six routes over node:http
+  src/flow.ts           launch and completion orchestration
+  src/auth.ts           classroom tokens (HS256) and hook signatures (HMAC)
+  src/ledger.ts         the AI-instruction ledger, atomic JSON, one writer
+  src/clients/          Open edX · OpenMAIC · console · OmniRoute
+  test/                 end-to-end over real HTTP, plus token rules
+packages/contracts/     the wire contract, copied verbatim by both patches
+patches/
+  openmaic/             identity method, completion route, reporter component
+  atheniq-console/      award service, internal API, launch route, portal button
+deploy/
+  openmaic/             OmniRoute model config
+  openedx/              LMS settings and the service-user script
+  signara/              the API's estate settings
+scripts/bootstrap.sh    fetch pinned upstreams, apply patches, check they still apply
+upstream.lock.json      the four repositories and the exact commits
+docs/                   architecture, contract, runbook
+```
+
+`upstream/` is fetched, never committed: Open edX alone is far too large to
+vendor. `upstream.lock.json` pins what the patches were generated against, and
+`scripts/bootstrap.sh --check` tells you when an upstream has moved.
+
+## What changed upstream
+
+| Repo | Change | Why |
+| --- | --- | --- |
+| **OpenMAIC** | `lib/server/identity/host/atheniq-classroom.ts` verifies the bridge's cookie with Web Crypto and answers an owner principal; registered from `instrumentation.ts` only when `ATHENIQ_BRIDGE_JWT_SECRET` is set. | The classroom must know the learner the console knows. A host identity method is OpenMAIC's own documented extension point, so no route is forked. With the secret unset, a standalone OpenMAIC is unchanged. |
+| **OpenMAIC** | `app/api/atheniq/completion` reports a finished classroom with an HMAC-signed callback; `components/atheniq/atheniq-completion-reporter.tsx` is the one control it renders. | Completion has to leave the classroom and reach the record of record. Identity and course come from the signed token, so a browser cannot claim another learner's completion. |
+| **atheniq-console** | `lib/award.ts` extracts the award logic that was the body of `POST /api/credentials`; both the registrar UI and the new service route use it. | One implementation of eligibility, evidence hashing and the Signara flow — the thing least affordable to have two of. |
+| **atheniq-console** | `app/api/internal/atheniq` (service-token), `app/api/classrooms/launch` (portal → bridge → cookie → redirect), and an *AI classroom* button in the portal. | The console is the only thing a learner signs into; it should be the only thing they press. |
+| **Open edX** | No source patch. `deploy/openedx/` adds the settings the estate needs (`WRITABLE_GRADEBOOK`, completion tracking, trusted origins) and a script that creates the bridge's service user. | The LMS already exposes the two endpoints the bridge writes to. Forking Django views would be a maintenance cost with no benefit. |
+| **Signara** | No source patch. The console already speaks its document + signature + certificate API; `deploy/signara/` adds the estate's API settings. | Signing is Signara's job, and the console is the issuer of record. |
+
+## Verification
+
+Run: `npm run check`.
+
+- **29 tests pass**, over real HTTP, against fake upstreams: launch, generation,
+  full completion fan-out, replay, signed-callback refusal, stale-signature
+  refusal, course/learner mismatch, unknown classroom, per-step retry, credential
+  idempotency, gateway model list, and the token rules (expiry, audience, issuer,
+  tampering, algorithm, weak signature).
+- **`tsc --noEmit` is clean** for the bridge and the shared contract.
+- **Both patches apply cleanly** to pristine clones of the pinned upstream
+  commits (`git apply --check`).
+
+Not verified here, and worth doing on a real deployment: a build of OpenMAIC and
+of the console with the patches applied (their dependency trees are large), and
+live calls to Open edX's completion and gradebook APIs and to Signara. The LMS
+client's request shapes follow the published API (completion-batch takes a
+`blocks` map; the gradebook write is `bulk-update` and needs a numeric user id,
+which Open edX does not expose over REST — hence `LMS_USER_MAP_PATH`). Treat the
+first live run as the contract test for those two, and see `docs/runbook.md`.
+
+## Limits, stated plainly
+
+- **The bridge's ledger is the source of truth for AI instruction**, in one JSON
+  file with serialised atomic writes. That is right for one bridge per estate; a
+  fleet needs the Postgres implementation of `lib/ledger.ts`, which is why the
+  interface is narrow.
+- **Grades need a user-id map.** Without `LMS_USER_MAP_PATH` the bridge writes
+  completions but reports `not_configured` for the grade, rather than guessing an
+  id. A grade written to the wrong learner is worse than an unwritten one.
+- **Signara key absent** means awards are held as `queued_local` by the console —
+  the design the console already documents. Nothing is lost; re-submitting picks
+  up where it stopped.
+- **No public sign-up.** Learners come from the console; the bridge never creates
+  a person.

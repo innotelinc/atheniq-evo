@@ -1,0 +1,38 @@
+{
+  "note": "The exact upstream commit each patch in patches/ was generated against. scripts/bootstrap.sh fetches these, so a checkout of atheniq-evo reproduces the estate without vendoring four repositories.",
+  "contractVersion": 1,
+  "upstreams": [
+    {
+      "name": "openedx-platform",
+      "role": "LMS — delivers courseware and holds the gradebook",
+      "repo": "https://github.com/innotelinc/openedx-platform.git",
+      "commit": "9c3de308c73478eb67ef8ad2fa5fd476ba8718c7",
+      "path": "upstream/openedx-platform",
+      "patched": false
+    },
+    {
+      "name": "OpenMAIC",
+      "role": "In-class AI instruction — generates and runs the AI classroom",
+      "repo": "https://github.com/innotelinc/OpenMAIC.git",
+      "commit": "79f4115f8480811ea9598298f14899f62892a0df",
+      "path": "upstream/OpenMAIC",
+      "patched": true
+    },
+    {
+      "name": "signara",
+      "role": "Signing and certificate/degree issuance",
+      "repo": "https://github.com/innotelinc/signara.git",
+      "commit": "dbc7d260deef74dc2cbe6ef30ba90ee4fde576f2",
+      "path": "upstream/signara",
+      "patched": false
+    },
+    {
+      "name": "atheniq-console",
+      "role": "Management console and student portal — the academic record",
+      "repo": "https://github.com/innotelinc/atheniq-console.git",
+      "commit": "e05381941aa65f9666944e685e624789696bef0b",
+      "path": "upstream/atheniq-console",
+      "patched": true
+    }
+  ]
+}

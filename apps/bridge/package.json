@@ -1,0 +1,15 @@
+{
+  "name": "@atheniq/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AthenIQ integration bridge: identity, classroom launch, completion fan-out and credential issuance.",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test test/",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

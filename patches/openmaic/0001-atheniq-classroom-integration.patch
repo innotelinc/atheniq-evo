@@ -1,0 +1,586 @@
+diff --git a/app/api/atheniq/classroom/route.ts b/app/api/atheniq/classroom/route.ts
+new file mode 100644
+index 0000000..1eb49cd
+--- /dev/null
++++ b/app/api/atheniq/classroom/route.ts
+@@ -0,0 +1,35 @@
++/**
++ * The classroom's own binding, for the UI.
++ *
++ * Answers with the course and classroom id the signed token carries, so the
++ * completion reporter can name them without the browser ever holding the token
++ * itself (it is HttpOnly).
++ */
++
++import { type NextRequest } from 'next/server';
++
++import { withRequestOwner } from '@/lib/server/identity/with-owner';
++import { atheniqClaimFromHeaders } from '@/lib/server/identity/host/atheniq-classroom';
++
++export const runtime = 'nodejs';
++
++export async function GET(req: NextRequest) {
++  return withRequestOwner(req, async (_principal, responseHeaders) => {
++    const claim = await atheniqClaimFromHeaders(req.headers);
++    const headers = new Headers(responseHeaders);
++    headers.set('cache-control', 'private, no-store');
++    if (!claim) {
++      return Response.json({ bridged: false }, { status: 200, headers });
++    }
++    return Response.json(
++      {
++        bridged: true,
++        courseKey: claim.courseKey,
++        classroomId: claim.classroomId,
++        learner: { name: claim.name ?? null, email: claim.email ?? null, role: claim.role },
++        expiresAt: new Date(claim.exp * 1000).toISOString(),
++      },
++      { status: 200, headers },
++    );
++  });
++}
+diff --git a/app/api/atheniq/completion/route.ts b/app/api/atheniq/completion/route.ts
+new file mode 100644
+index 0000000..8ffab4b
+--- /dev/null
++++ b/app/api/atheniq/completion/route.ts
+@@ -0,0 +1,122 @@
++/**
++ * Report a finished classroom to the AthenIQ bridge.
++ *
++ * Identity and course come from the **signed token**, never from the request
++ * body: a learner cannot claim someone else's completion, or move a completion
++ * to another course, by editing JSON in the browser. The body carries only what
++ * the classroom observed — a score and the outcomes.
++ *
++ * The call to the bridge is signed with HMAC-SHA256 over `timestamp.body`, so
++ * the bridge accepts it without holding a long-lived service token here.
++ * When `ATHENIQ_BRIDGE_URL` is unset the route answers 503 with the reason
++ * instead of pretending a completion was recorded.
++ */
++
++import { createHmac } from 'node:crypto';
++import { type NextRequest } from 'next/server';
++
++import { withRequestOwner } from '@/lib/server/identity/with-owner';
++import { atheniqClaimFromHeaders } from '@/lib/server/identity/host/atheniq-classroom';
++
++export const runtime = 'nodejs';
++
++const MAX_BODY_BYTES = 64 * 1024;
++
++interface ReportBody {
++  score?: number;
++  maxScore?: number;
++  outcomes?: { id: string; label?: string; mastery?: number }[];
++  issueCredential?: boolean;
++  idempotencyKey?: string;
++}
++
++function boundedNumber(value: unknown): number | undefined {
++  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
++}
++
++function outcomesOf(value: unknown): { id: string; label?: string; mastery?: number }[] {
++  if (!Array.isArray(value)) return [];
++  return value
++    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
++    .map((item) => ({
++      id: String(item.id ?? '').slice(0, 128),
++      ...(typeof item.label === 'string' ? { label: item.label.slice(0, 300) } : {}),
++      ...(boundedNumber(item.mastery) !== undefined ? { mastery: boundedNumber(item.mastery) } : {}),
++    }))
++    .filter((item) => /^[A-Za-z0-9._:-]{1,128}$/.test(item.id))
++    .slice(0, 100);
++}
++
++function jsonError(code: string, status: number, message: string) {
++  return Response.json({ ok: false, error: { code, message } }, { status });
++}
++
++export async function POST(req: NextRequest) {
++  return withRequestOwner(req, async (_principal, responseHeaders) => {
++    const bridgeUrl = (process.env.ATHENIQ_BRIDGE_URL ?? '').replace(/\/+$/, '');
++    const secret = process.env.ATHENIQ_BRIDGE_HOOK_SECRET ?? '';
++    if (!bridgeUrl || !secret) {
++      return jsonError(
++        'BRIDGE_NOT_CONFIGURED',
++        503,
++        'ATHENIQ_BRIDGE_URL and ATHENIQ_BRIDGE_HOOK_SECRET must be set to report a completion.',
++      );
++    }
++
++    const claim = await atheniqClaimFromHeaders(req.headers);
++    if (!claim) return jsonError('NOT_BRIDGED', 401, 'This request carries no AthenIQ classroom identity.');
++
++    const raw = await req.text();
++    if (raw.length > MAX_BODY_BYTES) return jsonError('BODY_TOO_LARGE', 413, 'Report body is too large.');
++    let body: ReportBody = {};
++    if (raw) {
++      try {
++        body = JSON.parse(raw) as ReportBody;
++      } catch {
++        return jsonError('BAD_JSON', 400, 'Report body is not valid JSON.');
++      }
++    }
++
++    // The bridge is authoritative for the learner and the course; the body only
++    // adds what the classroom measured.
++    const payload = JSON.stringify({
++      classroomId: claim.classroomId,
++      courseKey: claim.courseKey,
++      learnerId: claim.sub,
++      ...(claim.lmsUsername ? { lmsUsername: claim.lmsUsername } : {}),
++      ...(boundedNumber(body.score) !== undefined ? { score: body.score } : {}),
++      ...(boundedNumber(body.maxScore) !== undefined ? { maxScore: body.maxScore } : {}),
++      ...(outcomesOf(body.outcomes).length ? { outcomes: outcomesOf(body.outcomes) } : {}),
++      ...(body.issueCredential === true ? { issueCredential: true } : {}),
++      ...(typeof body.idempotencyKey === 'string' && body.idempotencyKey
++        ? { idempotencyKey: body.idempotencyKey.slice(0, 200) }
++        : {}),
++    });
++
++    const timestamp = String(Math.floor(Date.now() / 1000));
++    const signature = createHmac('sha256', secret).update(`${timestamp}.${payload}`).digest('hex');
++
++    let upstream: Response;
++    try {
++      upstream = await fetch(`${bridgeUrl}/v1/completions`, {
++        method: 'POST',
++        headers: {
++          'content-type': 'application/json',
++          'x-atheniq-timestamp': timestamp,
++          'x-atheniq-signature': signature,
++        },
++        body: payload,
++        signal: AbortSignal.timeout(30_000),
++      });
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      return jsonError('BRIDGE_UNREACHABLE', 502, `Could not reach the AthenIQ bridge: ${message}`);
++    }
++
++    const text = await upstream.text();
++    const headers = new Headers(responseHeaders);
++    headers.set('content-type', 'application/json');
++    headers.set('cache-control', 'private, no-store');
++    return new Response(text, { status: upstream.status, headers });
++  });
++}
+diff --git a/app/classroom/[id]/page.tsx b/app/classroom/[id]/page.tsx
+index 4024395..0fa3172 100644
+--- a/app/classroom/[id]/page.tsx
++++ b/app/classroom/[id]/page.tsx
+@@ -1,10 +1,17 @@
+ 'use client';
+ 
+ import { ClassroomSurface } from '@/components/classroom/ClassroomSurface';
++import { AtheniqCompletionReporter } from '@/components/atheniq/atheniq-completion-reporter';
+ import { useParams } from 'next/navigation';
+ 
+ export default function ClassroomDetailPage() {
+   const params = useParams<{ id: string }>();
+ 
+-  return <ClassroomSurface classroomId={params.id} variant="page" />;
++  return (
++    <>
++      <ClassroomSurface classroomId={params.id} variant="page" />
++      {/* Renders only for a classroom launched through the AthenIQ bridge. */}
++      <AtheniqCompletionReporter classroomId={params.id} />
++    </>
++  );
+ }
+diff --git a/components/atheniq/atheniq-completion-reporter.tsx b/components/atheniq/atheniq-completion-reporter.tsx
+new file mode 100644
+index 0000000..b56a5ba
+--- /dev/null
++++ b/components/atheniq/atheniq-completion-reporter.tsx
+@@ -0,0 +1,144 @@
++'use client';
++
++/**
++ * "Finish module" — the one AthenIQ control inside a classroom.
++ *
++ * It renders only when this classroom was launched through the AthenIQ bridge
++ * (the server says so at `/api/atheniq/classroom`, reading the signed HttpOnly
++ * cookie the browser cannot see). Pressing it reports the classroom to the
++ * bridge, which writes the completion and grade to the LMS, closes the
++ * enrollment in the console, and awards a certificate when the learner is
++ * eligible.
++ *
++ * The component deliberately renders no course data it could get wrong: the
++ * course and learner live in the signed token, server-side. If the bridge is
++ * unreachable the button says so and stays pressable — a completion retried
++ * later is the same completion, because the bridge deduplicates it.
++ */
++
++import { useEffect, useState } from 'react';
++
++interface Binding {
++  bridged: boolean;
++  courseKey?: string;
++  classroomId?: string;
++}
++
++type SendState = 'idle' | 'sending' | 'sent' | 'replay' | 'error';
++
++export function AtheniqCompletionReporter({ classroomId }: { classroomId: string }) {
++  const [binding, setBinding] = useState<Binding | null>(null);
++  const [state, setState] = useState<SendState>('idle');
++  const [detail, setDetail] = useState('');
++
++  useEffect(() => {
++    let cancelled = false;
++    fetch('/api/atheniq/classroom', { headers: { accept: 'application/json' } })
++      .then((response) => (response.ok ? response.json() : { bridged: false }))
++      .then((value: Binding) => {
++        if (!cancelled) setBinding(value);
++      })
++      .catch(() => {
++        if (!cancelled) setBinding({ bridged: false });
++      });
++    return () => {
++      cancelled = true;
++    };
++  }, []);
++
++  if (!binding?.bridged) return null;
++
++  async function report() {
++    setState('sending');
++    setDetail('');
++    try {
++      const response = await fetch('/api/atheniq/completion', {
++        method: 'POST',
++        headers: { 'content-type': 'application/json' },
++        // The classroom id makes the submission idempotent: pressing twice, or a
++        // retry after a dropped response, cannot award twice.
++        body: JSON.stringify({ issueCredential: true, idempotencyKey: `classroom:${classroomId}` }),
++      });
++      const payload = (await response.json()) as {
++        replay?: boolean;
++        credential?: { verifyId?: string } | null;
++        steps?: { step: string; status: string }[];
++        error?: { message?: string };
++      };
++      if (!response.ok) {
++        setState('error');
++        setDetail(payload.error?.message ?? `The bridge answered ${response.status}.`);
++        return;
++      }
++      setState(payload.replay ? 'replay' : 'sent');
++      const award = payload.credential?.verifyId;
++      setDetail(
++        award
++          ? `Reported. Certificate ${award} issued.`
++          : payload.replay
++            ? 'This module was already reported.'
++            : 'Reported to the LMS and the console.',
++      );
++    } catch (error) {
++      setState('error');
++      setDetail(error instanceof Error ? error.message : 'Could not reach the bridge.');
++    }
++  }
++
++  const busy = state === 'sending';
++  const done = state === 'sent' || state === 'replay';
++
++  return (
++    <div
++      style={{
++        position: 'fixed',
++        right: 20,
++        bottom: 20,
++        zIndex: 60,
++        display: 'flex',
++        flexDirection: 'column',
++        alignItems: 'flex-end',
++        gap: 6,
++        maxWidth: 320,
++        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
++      }}
++    >
++      {detail ? (
++        <p
++          role="status"
++          style={{
++            margin: 0,
++            padding: '8px 12px',
++            borderRadius: 10,
++            background: 'rgba(12, 18, 28, 0.92)',
++            color: state === 'error' ? '#ffb4a8' : '#d7f7e6',
++            fontSize: 12,
++            lineHeight: 1.4,
++            boxShadow: '0 6px 24px rgba(0,0,0,0.28)',
++          }}
++        >
++          {detail}
++        </p>
++      ) : null}
++      <button
++        type="button"
++        onClick={report}
++        disabled={busy}
++        title={binding.courseKey ? `Course ${binding.courseKey}` : undefined}
++        style={{
++          border: '1px solid rgba(255,255,255,0.16)',
++          borderRadius: 999,
++          padding: '10px 16px',
++          background: done ? 'rgba(16, 122, 87, 0.95)' : 'rgba(12, 18, 28, 0.92)',
++          color: '#f3f7fb',
++          fontSize: 13,
++          fontWeight: 600,
++          cursor: busy ? 'progress' : 'pointer',
++          boxShadow: '0 8px 28px rgba(0,0,0,0.32)',
++        }}
++      >
++        {busy ? 'Reporting…' : done ? 'Reported ✓' : 'Finish module'}
++      </button>
++    </div>
++  );
++}
+diff --git a/instrumentation.ts b/instrumentation.ts
+index a269144..c8543f3 100644
+--- a/instrumentation.ts
++++ b/instrumentation.ts
+@@ -40,12 +40,37 @@ export async function register(): Promise<void> {
+   // mode without ACCESS_CODE serves one library to whoever can reach the
+   // server. Its warning names ACCESS_CODE itself, so the generic unset-code
+   // warning is skipped then: one warning, not two.
+-  const { warnAboutOwnerIdentityConfiguration } = await import('@/lib/server/identity/registry');
++  const { configureOwnerAuthentication, warnAboutOwnerIdentityConfiguration } = await import(
++    '@/lib/server/identity/registry'
++  );
+   if (!warnAboutOwnerIdentityConfiguration()) {
+     const { warnIfAccessCodeIsUnset } = await import('@/lib/server/access-code-warning');
+     warnIfAccessCodeIsUnset(process.env.ACCESS_CODE);
+   }
+ 
++  // AthenIQ: when the estate's bridge secret is present, a classroom launched
++  // from the console resolves to the learner the bridge signed for, so the
++  // library, materials and persistence are the same owner across the estate.
++  // Without the secret OpenMAIC keeps whichever identity mode the environment
++  // selected, so a standalone deployment is unaffected.
++  if (process.env.ATHENIQ_BRIDGE_JWT_SECRET) {
++    try {
++      const { atheniqClassroomMethod } = await import(
++        '@/lib/server/identity/host/atheniq-classroom'
++      );
++      configureOwnerAuthentication({
++        methods: [atheniqClassroomMethod],
++        // A direct visit without a launch still works; it simply is not bridged.
++        anonymousFallback: true,
++      });
++    } catch (error) {
++      console.warn(
++        '[atheniq] classroom identity was not registered; OpenMAIC keeps its own identity mode:',
++        error instanceof Error ? error.message : error
++      );
++    }
++  }
++
+   // Warn-only: the workbench flag's previous name, still read until 1.6.0
+   // (lib/server/workbench-flag-deprecation.ts).
+   const { warnIfDeprecatedWorkbenchFlagIsUsed } =
+diff --git a/lib/server/identity/host/atheniq-classroom.ts b/lib/server/identity/host/atheniq-classroom.ts
+new file mode 100644
+index 0000000..78d7fb1
+--- /dev/null
++++ b/lib/server/identity/host/atheniq-classroom.ts
+@@ -0,0 +1,195 @@
++/**
++ * AthenIQ classroom identity — the host method that makes a learner one person
++ * across the console, the LMS and this classroom.
++ *
++ * The AthenIQ bridge signs a short-lived HS256 token (`atheniq_classroom`) when
++ * the console's launch route sends a learner here. It carries the person id, the
++ * course key and the classroom id. This method verifies it and answers with an
++ * owner principal, so every owner-scoped surface — the library, the persistence
++ * route, materials, agent sessions — is the *same* owner the rest of the estate
++ * knows, with no duplicate account to keep in step.
++ *
++ * Design notes, both deliberate:
++ *
++ * - **A cookie, not a header.** The launch is a browser navigation; nothing can
++ *   attach an Authorization header to it. A host method may read its own cookie
++ *   (see `lib/server/identity/anonymous-cookie.ts`), and this is that cookie.
++ * - **Web Crypto, not a JWT library.** HS256 verification is one
++ *   `crypto.subtle.verify`. Adding `jose` to this app to check a symmetric
++ *   signature would be a dependency for twenty lines of code.
++ *
++ * Absent cookie means `not-applicable`; present-but-bad means `invalid`, so a
++ * forged or expired token can never quietly become an anonymous owner.
++ */
++
++import type { OwnerAuthMethod, OwnerPrincipal } from '@/lib/server/identity';
++
++/** The cookie the console sets, and the only one this method reads. */
++export const ATHENIQ_COOKIE = 'atheniq_classroom';
++
++/** Issuer and audience are pinned; a token minted for another product is refused. */
++const ISSUER = 'https://bridge.atheniq.institute';
++const AUDIENCE = 'atheniq-classroom';
++const CONTRACT_VERSION = 1;
++const CLOCK_TOLERANCE_SECONDS = 30;
++
++export interface AtheniqClaim {
++  sub: string;
++  role: 'learner' | 'instructor' | 'registrar' | 'service';
++  org: string;
++  courseKey: string;
++  classroomId: string;
++  name?: string;
++  email?: string;
++  lmsUsername?: string;
++  exp: number;
++}
++
++function decode(value: string): Uint8Array {
++  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
++  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
++  const binary = atob(padded);
++  const bytes = new Uint8Array(binary.length);
++  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
++  return bytes;
++}
++
++function readCookie(header: string | null, name: string): string | undefined {
++  if (!header) return undefined;
++  for (const part of header.split(';')) {
++    const separator = part.indexOf('=');
++    if (separator === -1) continue;
++    if (part.slice(0, separator).trim() !== name) continue;
++    return decodeURIComponent(part.slice(separator + 1).trim());
++  }
++  return undefined;
++}
++
++/** Verify the signature and every claim this app depends on. */
++export async function verifyAtheniqToken(
++  token: string,
++  secret: string,
++  now: number = Math.floor(Date.now() / 1000),
++): Promise<AtheniqClaim | null> {
++  const parts = token.split('.');
++  if (parts.length !== 3) return null;
++  const [header, body, signature] = parts as [string, string, string];
++
++  let head: unknown;
++  let payload: unknown;
++  try {
++    head = JSON.parse(new TextDecoder().decode(decode(header)));
++    payload = JSON.parse(new TextDecoder().decode(decode(body)));
++  } catch {
++    return null;
++  }
++  if (typeof head !== 'object' || head === null) return null;
++  if ((head as Record<string, unknown>).alg !== 'HS256') return null;
++
++  const key = await crypto.subtle.importKey(
++    'raw',
++    new TextEncoder().encode(secret),
++    { name: 'HMAC', hash: 'SHA-256' },
++    false,
++    ['verify'],
++  );
++  let valid = false;
++  try {
++    valid = await crypto.subtle.verify(
++      'HMAC',
++      key,
++      decode(signature),
++      new TextEncoder().encode(`${header}.${body}`),
++    );
++  } catch {
++    return null;
++  }
++  if (!valid) return null;
++
++  if (typeof payload !== 'object' || payload === null) return null;
++  const claims = payload as Record<string, unknown>;
++
++  if (claims.iss !== ISSUER || claims.aud !== AUDIENCE) return null;
++  if (claims.ver !== CONTRACT_VERSION) return null;
++  if (typeof claims.exp !== 'number' || claims.exp + CLOCK_TOLERANCE_SECONDS < now) return null;
++  if (typeof claims.sub !== 'string' || !claims.sub) return null;
++  if (typeof claims.courseKey !== 'string' || !claims.courseKey) return null;
++  if (typeof claims.classroomId !== 'string' || !claims.classroomId) return null;
++  if (typeof claims.org !== 'string' || !claims.org) return null;
++  const role = claims.role;
++  if (role !== 'learner' && role !== 'instructor' && role !== 'registrar' && role !== 'service') {
++    return null;
++  }
++
++  return {
++    sub: claims.sub,
++    role,
++    org: claims.org,
++    courseKey: claims.courseKey,
++    classroomId: claims.classroomId,
++    exp: claims.exp,
++    ...(typeof claims.name === 'string' ? { name: claims.name } : {}),
++    ...(typeof claims.email === 'string' ? { email: claims.email } : {}),
++    ...(typeof claims.lmsUsername === 'string' ? { lmsUsername: claims.lmsUsername } : {}),
++  };
++}
++
++/**
++ * The owner id this method mints.
++ *
++ * Prefixed so it can never collide with an anonymous uuid, a single-user id or
++ * a shared-team id in the same column — changing the scheme later would orphan
++ * every course already stored under it.
++ */
++export function ownerIdFor(claim: AtheniqClaim): string {
++  return `atheniq:${claim.sub}`;
++}
++
++/** Publishing is a staff act; a learner may own their library but not publish. */
++function rolesFor(claim: AtheniqClaim): ReadonlySet<string> {
++  const roles = new Set<string>();
++  if (claim.role === 'instructor' || claim.role === 'registrar' || claim.role === 'service') {
++    roles.add('course:publish');
++  }
++  if (claim.role === 'registrar' || claim.role === 'service') roles.add('admin');
++  return roles;
++}
++
++async function claimFromHeaders(headers: Headers): Promise<
++  { status: 'absent' } | { status: 'bad' } | { status: 'ok'; claim: AtheniqClaim }
++> {
++  const secret = process.env.ATHENIQ_BRIDGE_JWT_SECRET;
++  if (!secret) return { status: 'absent' };
++  const token = readCookie(headers.get('cookie'), ATHENIQ_COOKIE);
++  if (!token) return { status: 'absent' };
++  const claim = await verifyAtheniqToken(token, secret);
++  return claim ? { status: 'ok', claim } : { status: 'bad' };
++}
++
++/** The claim for a request, for routes that need the course it was minted for. */
++export async function atheniqClaimFromHeaders(headers: Headers): Promise<AtheniqClaim | null> {
++  const resolved = await claimFromHeaders(headers);
++  return resolved.status === 'ok' ? resolved.claim : null;
++}
++
++export const atheniqClassroomMethod: OwnerAuthMethod = {
++  name: 'atheniqClassroom',
++
++  async authenticate(req) {
++    const resolved = await claimFromHeaders(req.headers);
++    if (resolved.status === 'absent') return { status: 'not-applicable' };
++    if (resolved.status === 'bad') return { status: 'invalid', reason: 'atheniq token rejected' };
++
++    const principal: OwnerPrincipal = {
++      ownerId: ownerIdFor(resolved.claim),
++      kind: 'user',
++      roles: rolesFor(resolved.claim),
++      assurance: 'verified',
++      channel: 'atheniq-bridge',
++    };
++    return { status: 'authenticated', principal };
++  },
++
++  describeStoredOwner: (ownerId) =>
++    ownerId.startsWith('atheniq:') ? { kind: 'user', roles: new Set(['course:publish']) } : undefined,
++};

@@ -1,0 +1,26 @@
+# OpenMAIC's model configuration for the AthenIQ estate.
+#
+# Every slot goes through OmniRoute on the estate's single key, so no workspace
+# holds a vendor key of its own and a model changes in one place for the
+# classroom, the course studio and anything else that follows.
+#
+# Only slots documented by this OpenMAIC release are set here: the server
+# validates the file at startup and names a bad slot by field, so inventing one
+# would stop the app rather than being ignored. Providers are declared once and
+# a slot names the provider, the model, or both.
+
+providers:
+  omniroute:
+    preset: omniroute
+    apiKey: ${OMNIROUTE_API_KEY}
+    # gateway.innotel.us serves the OpenAI-compatible surface under /v1.
+    baseUrl: ${OMNIROUTE_BASE_URL}
+
+slots:
+  # The default chat model: the outline, scene content and chat all follow it
+  # unless a slot below is set.
+  llm: omniroute:auto/best-chat
+  # A provider id alone means "the plan's default model for this capability".
+  image: omniroute
+  tts: omniroute
+  video: omniroute

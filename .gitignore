@@ -1,0 +1,38 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+!*.example
+*.pem
+*.p8
+*.key
+
+# Runtime state
+data/
+*.ledger.json
+*.log
+logs/
+
+# Fetched upstreams — pinned in upstream.lock.json, never vendored
+upstream/
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# Python / Open edX
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
