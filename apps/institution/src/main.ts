@@ -1,15 +1,16 @@
 /**
  * Boot the institution service.
  *
- * It refuses to start on a weak production session key or a missing registrar
- * credential, for the same reason the bridge refuses a weak signing key: a
- * service that starts insecurely is worse than one that explains why it will
- * not start.
+ * It refuses to start on a weak production session key, a missing registrar
+ * credential, or a Stalwart mailbox that cannot be reached and used, for the
+ * same reason the bridge refuses a weak signing key: a service that starts
+ * misconfigured is worse than one that explains why it will not start.
  */
 
 import { ConfigError, describeConfig, loadConfig, type InstitutionConfig } from "./config.ts";
 import { Store, StoreError } from "./store.ts";
 import { Registry } from "./registry.ts";
+import { createMailer } from "./mail.ts";
 import { createInstitutionServer } from "./server.ts";
 
 function fail(message: string): never {
@@ -17,7 +18,7 @@ function fail(message: string): never {
   process.exit(78);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   let config: InstitutionConfig;
   try {
     config = loadConfig();
@@ -35,7 +36,17 @@ function main(): void {
   }
 
   const registry = new Registry(store, config);
-  const server = createInstitutionServer({ config, registry });
+  const mailer = createMailer(config);
+  if (mailer) {
+    try {
+      await mailer.preflight();
+    } catch (error) {
+      fail(`mail preflight failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    console.log(`atheniq-institution: mail preflight ok (${config.mailDomain} at ${config.stalwartUrl})`);
+  }
+
+  const server = createInstitutionServer({ config, registry, mailer });
   const host = process.env.HOST ?? "0.0.0.0";
 
   server.listen(config.port, host, () => {
@@ -59,4 +70,4 @@ function main(): void {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main();
+main().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)));

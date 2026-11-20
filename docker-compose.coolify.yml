@@ -3,8 +3,12 @@
 # One container serves two hostnames. Assign both domains to the `institution`
 # service in Coolify (Domains -> Add domain), each with internal port 8080:
 #
-#   https://atheniq.innotel.site:8080
-#   https://registrar.innotel.site:8080
+#   https://atheniq.innotel.site:8080     public site and student portal
+#   https://registrar.innotel.site:8080   institution registrar panel
+#
+# `registrar.innotel.site` is the registrar surface of this service (admissions,
+# account issuance, roster), not the AthenIQ console on port 3100. The console is
+# a separate Next.js app and is not published by this resource.
 #
 # The hostname decides the surface, so `TRUST_PROXY` must stay true behind
 # Coolify's proxy. See deploy/coolify/README.md for the full procedure.
@@ -32,6 +36,8 @@ services:
       STALWART_URL: ${STALWART_URL:-https://mail.innotel.us}
       STALWART_TOKEN: ${STALWART_TOKEN:-}
       STALWART_QUOTA_BYTES: ${STALWART_QUOTA_BYTES:-0}
+      # Empty on purpose: no console is published here, so the portal hides the
+      # link instead of pointing at a host that does not answer.
       CONSOLE_BASE_URL: ${CONSOLE_BASE_URL:-}
       CREDENTIAL_VERIFY_URL: ${CREDENTIAL_VERIFY_URL:-}
     expose:

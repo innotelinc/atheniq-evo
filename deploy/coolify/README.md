@@ -1,23 +1,27 @@
 # Deploying the institution on Coolify
 
-This resource deploys the institution service: the public site at
-`atheniq.innotel.site` and the registrar panel at `registrar.innotel.site`, from
-one container and one registry volume.
+This resource deploys the institution service: the public site and student portal
+at `atheniq.innotel.site`, and the institution's registrar panel at
+`registrar.innotel.site` — applications, admission, account issuance and the
+student roster — from one container and one registry volume.
 
-The AthenIQ console on port 3100 is a **separate Next.js app** (`upstream/atheniq-console`).
-It is not in this Compose file, because both hostnames above are already assigned
-to the institution service. If the console should be public as well, give it its
-own hostname (for example `console.innotel.site`) and deploy its Dockerfile as a
-second Coolify resource. Leaving `CONSOLE_BASE_URL` empty hides the portal's
-console link.
+`registrar.innotel.site` is **not** the AthenIQ console. The console on port 3100
+(`upstream/atheniq-console`) is a separate Next.js app for courses, schools and
+credentials. It is not in this Compose file and is not published by this
+resource. That is why `CONSOLE_BASE_URL` stays empty: with no public console URL
+the portal hides its console link instead of pointing it at a host that does not
+answer. To publish the console later, give it its own hostname (for example
+`console.innotel.site`) and deploy it as a second Coolify resource.
 
 ## Before deploying
 
 - The repository must be pushed to the Git remote Coolify can read.
 - DNS for `atheniq.innotel.site` and `registrar.innotel.site` must point at the
   Coolify server (A/AAAA, or CNAME to its hostname).
-- The Stalwart domain must already exist, and its API key must have
-  `sysDomainQuery`, `sysAccountCreate` and `sysAccountUpdate`.
+- The Stalwart domain must already exist, its API key must hold
+  `sysDomainQuery`, `sysAccountCreate` and `sysAccountUpdate`, and
+  `https://mail.innotel.us/jmap/` must answer. The service checks all three at
+  startup, so a wrong URL, key or domain fails the deploy before it serves a page.
 
 ## 1. Create the resource
 
@@ -42,11 +46,11 @@ Mark the secrets as secrets in Coolify.
 | `REGISTRAR_PASSWORD_HASH` | `scrypt$…` | Preferred. Generate it with the command below. |
 | `REGISTRAR_PASSWORD` | a 12+ character password | Alternative to the hash; remove after first boot. |
 | `MAIL_PROVIDER` | `stalwart` | `local` reserves addresses without creating mailboxes. |
-| `MAIL_DOMAIN` | `atheniq.institute` | Must exist in Stalwart. Use `innotel.us` if that is the mail domain. |
-| `STALWART_URL` | `https://mail.innotel.us` | Stalwart JMAP base URL. |
-| `STALWART_TOKEN` | `API_…` | Stalwart API key. Secret. |
+| `MAIL_DOMAIN` | `atheniq.institute` | Must exist in Stalwart; checked at startup. Use `innotel.us` if that is the mail domain. |
+| `STALWART_URL` | `https://mail.innotel.us` | Stalwart JMAP base URL; checked at startup. |
+| `STALWART_TOKEN` | `API_…` | Secret. Required with `MAIL_PROVIDER=stalwart`; checked at startup. |
 | `STALWART_QUOTA_BYTES` | `0` or a byte count | `0` means no per-mailbox quota. |
-| `CONSOLE_BASE_URL` | empty or a public console URL | Browser link; never `http://console:3100`. |
+| `CONSOLE_BASE_URL` | leave empty | The console is not published by this resource. |
 | `CREDENTIAL_VERIFY_URL` | empty or the Signara verify URL | Optional. |
 
 Generate the registrar hash locally, in the repository root:
@@ -58,9 +62,9 @@ node --input-type=module -e \
 ```
 
 The service refuses to start in production if `SESSION_SECRET` is missing or
-short, if both registrar credentials are empty, or if `MAIL_PROVIDER=stalwart`
-is set without `STALWART_URL` and `STALWART_TOKEN`. That is deliberate: a
-half-configured mail deployment should fail at startup, not after an admission.
+short, if both registrar credentials are empty, if `COOKIE_SECURE=false`, or if
+the Stalwart preflight fails. That is deliberate: a half-configured deployment
+should fail at startup, not after an admission.
 
 ## 3. Assign both domains
 
@@ -76,15 +80,27 @@ Coolify routes by hostname to the same container. The service reads
 `X-Forwarded-Host` because `TRUST_PROXY=true`; without that, every request would
 look like the internal container host and the registrar would never appear.
 
+Both names reach the same container, but they do not serve the same pages:
+`registrar.innotel.site` answers with the registrar sign-in and, once signed in,
+the registrar panel. It never serves the public site, and the public host never
+serves the panel.
+
 Do not add a public `ports:` mapping for 8080. Coolify's proxy is the only
-ingress, and the container should not be reachable directly.
+ingress, and the container should not be reachable directly. Do not point any
+domain at port 3100 from this resource; there is no service listening there.
 
 ## 4. Deploy and verify
 
 1. Deploy. The Dockerfile healthcheck calls `/health` every 15 seconds.
-2. Check the deployment logs for:
-   `atheniq-institution: listening on 0.0.0.0:8080`, followed by the public and
-   registrar origins.
+2. Check the deployment logs for the preflight, then the listener:
+
+   ```
+   atheniq-institution: mail preflight ok (atheniq.institute at https://mail.innotel.us)
+   atheniq-institution: listening on 0.0.0.0:8080
+   ```
+
+   No preflight line with `MAIL_PROVIDER=local` is expected; that is the
+   reserve-only mode.
 3. Verify externally:
 
 ```bash
@@ -93,13 +109,33 @@ curl -fsS -o /dev/null -w '%{http_code}\n' https://atheniq.innotel.site/
 curl -fsS -o /dev/null -w '%{http_code}\n' https://registrar.innotel.site/
 ```
 
-The registrar hostname serves the registrar sign-in page; it does not serve the
-public site. Sign in with `REGISTRAR_EMAIL` and the password or hash you set.
+Sign in at `https://registrar.innotel.site/signin` with `REGISTRAR_EMAIL` and the
+password or hash you set.
 
 4. Submit one test application, admit it, and confirm the confirmation says the
 mailbox is active. If it says the mailbox is still reserved, read the container
 logs for `mailbox provisioning failed`, fix the Stalwart token or domain, then
 use **Reset access** on the student record to retry.
+
+## When the mail preflight fails
+
+The process exits with status 78 and prints one line naming the setting, so the
+failure is in the deployment log rather than in a student's admission:
+
+```
+atheniq-institution: mail preflight failed: <reason>
+```
+
+| Reason | What it means | Fix |
+| --- | --- | --- |
+| `Stalwart is unreachable at https://…` | DNS, TLS or the host is down | Correct `STALWART_URL`, or bring Stalwart up |
+| `Stalwart refused the API key (401)` | The bearer token is wrong, expired, or lacks permissions | Put a new key in `STALWART_TOKEN` with the three `sys*` permissions |
+| `Stalwart refused the API key (403)` | The key exists but may not query domains | Grant `sysDomainQuery` to the key's account |
+| `Stalwart has no domain atheniq.institute` | `MAIL_DOMAIN` is not a domain in Stalwart | Create the domain in Stalwart, or set `MAIL_DOMAIN` to one that exists |
+
+With `restart: unless-stopped` Coolify restarts the container until the check
+passes, so the log shows the same reason each time. A passing preflight does not
+prove delivery; the admitted mailbox in step 4 is the real test.
 
 ## Stalwart checklist
 

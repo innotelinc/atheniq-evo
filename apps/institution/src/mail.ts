@@ -15,6 +15,8 @@ import type { InstitutionConfig } from "./config.ts";
 export interface Mailer {
   /** "stalwart" — used in notices and the mailbox record. */
   readonly provider: string;
+  /** Prove the provider is reachable and configured before the service listens. */
+  preflight(): Promise<void>;
   /** Create the account, or update its password if it already exists. */
   ensureAccount(address: string, password: string, displayName: string): Promise<void>;
 }
@@ -46,6 +48,15 @@ export class StalwartMailer implements Mailer {
     this.domain = options.domain.toLowerCase();
     this.quotaBytes = options.quotaBytes ?? 0;
     this.fetcher = options.fetcher ?? fetch;
+  }
+
+  /**
+   * One domain query proves all three settings this module depends on: the URL
+   * answers, the key is accepted, and `MAIL_DOMAIN` exists. Startup runs it so a
+   * typo is reported once, at boot, rather than on the first admission.
+   */
+  async preflight(): Promise<void> {
+    await this.stalwartDomainId();
   }
 
   async ensureAccount(address: string, password: string, displayName: string): Promise<void> {
@@ -101,7 +112,7 @@ export class StalwartMailer implements Mailer {
     const ids = Array.isArray(result.ids) ? result.ids : [];
     if (ids.length === 0) {
       throw new MailError(
-        `Stalwart has no domain ${this.domain}. Add it under Management → Domains before admitting students.`,
+        `Stalwart has no domain ${this.domain}. Check MAIL_DOMAIN, or add the domain under Management → Domains.`,
       );
     }
     this.domainId = String(ids[0]);
@@ -135,10 +146,17 @@ export class StalwartMailer implements Mailer {
         signal: AbortSignal.timeout(15_000),
       });
     } catch (error) {
-      throw new MailError(`Stalwart is unreachable: ${error instanceof Error ? error.message : String(error)}`);
+      throw new MailError(
+        `Stalwart is unreachable at ${this.baseUrl}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new MailError(
+          `Stalwart refused the API key (${response.status}). Check STALWART_TOKEN and its permissions.`,
+        );
+      }
       const detail = (await response.text().catch(() => "")).slice(0, 300);
       throw new MailError(`Stalwart answered ${response.status}${detail ? `: ${detail}` : ""}`);
     }

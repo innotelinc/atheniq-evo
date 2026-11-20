@@ -66,9 +66,9 @@ Then open `http://atheniq.localhost:8080` for the public site and
 
 `npm run check` is the honest gate: a Compose guard, `tsc` over the bridge and
 the institution, 29 bridge tests that start the real HTTP server against fake
-OpenMAIC, LMS, console and OmniRoute, and 22 institution tests covering the
+OpenMAIC, LMS, console and OmniRoute, and 26 institution tests covering the
 application → admission → account → registration lifecycle and the Stalwart
-JMAP calls against a fake server.
+JMAP calls and startup preflight against a fake server.
 
 ### One Compose rule
 
@@ -150,9 +150,10 @@ Run: `npm run check`.
   stale-signature refusal, course/learner mismatch, unknown classroom, per-step
   retry, credential idempotency, gateway model list, and the token rules
   (expiry, audience, issuer, tampering, algorithm, weak signature).
-- **22 institution tests pass**: curriculum integrity, application validation,
+- **26 institution tests pass**: curriculum integrity, application validation,
   admission issuing one account and a unique `@atheniq.institute` address,
   mailbox activation, Stalwart account creation and password updates, the
+  startup preflight (unreachable URL, rejected key, missing domain), the
   provider configuration guard, temporary-password sign-in and forced change,
   seat accounting, full-studio refusal, waitlist refusal, salted password hashes,
   and session role/tamper rules.
@@ -191,8 +192,11 @@ first live run as the contract test for those two, and see `docs/runbook.md`.
 - **Mail is wired to Stalwart when configured.** `MAIL_PROVIDER=local` reserves
   the address only. With `MAIL_PROVIDER=stalwart`, admission creates the mailbox
   through Stalwart's JMAP management API, and a portal password change or a
-  registrar reset updates it. If provisioning fails, the address stays
-  `reserved` and the registrar's access reset retries it.
+  registrar reset updates it. Startup queries the configured domain first, so a
+  bad URL, a rejected key or a missing `MAIL_DOMAIN` stops the service with
+  `mail preflight failed: …` instead of surfacing on the first admission. If
+  provisioning still fails, the address stays `reserved` and the registrar's
+  access reset retries it.
 - **The institution registry is one JSON file, one writer.** Right for one
   institute on one process; `docs/institution.md` names the migration path and
   the production hardening order.

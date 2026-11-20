@@ -212,6 +212,11 @@ node --env-file=.env apps/institution/src/main.ts
 to `http://registrar.localhost:8080`. Both are served by this one process; the
 surface is chosen from the `Host` header.
 
+With `MAIL_PROVIDER=stalwart` the process first queries Stalwart for
+`MAIL_DOMAIN` and exits `78` with `mail preflight failed: <reason>` if the URL,
+the key or the domain is wrong — it never starts half-wired. Leave
+`MAIL_PROVIDER=local` for a preview that does not touch mail.
+
 - Public site: <http://atheniq.localhost:8080> (or `http://127.0.0.1:8080`)
 - Registrar: <http://registrar.localhost:8080>
 
@@ -310,7 +315,7 @@ command line. Do not use one.
 `.github/workflows/ci.yml` runs three jobs:
 
 1. **typecheck and tests** — `npm ci && npm run check` (static Compose guard,
-   `tsc` for the bridge and the institution, 51 tests).
+   `tsc` for the bridge and the institution, 55 tests).
 2. **compose interpolation** — on a Docker runner, generates a literal `.env`,
    runs `docker compose config` for the default and both opt-in profiles, then
    asserts that Compose's *resolved* model contains the `.env` values rather

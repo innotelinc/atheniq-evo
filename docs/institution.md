@@ -106,9 +106,16 @@ source of truth for who exists; Stalwart is the delivery system.
    the mailbox. Changing the portal password or resetting access updates the
    Stalwart credential as well.
 
-If Stalwart is unreachable the admission still succeeds and the address stays
-`reserved`. Fix the provider settings, then use **Reset access** on the student
-record; that issues a new temporary password and retries the mailbox. The
+At startup the service runs one `x:Domain/query` for `MAIL_DOMAIN`. That single
+call proves all three settings: the URL answers, the key is accepted, and the
+domain exists. If any of them is wrong the service exits with
+`mail preflight failed: <reason>` and a line naming the setting to fix, rather
+than starting and failing during an admission. A passing preflight does not
+prove delivery — the admitted mailbox is still the real test.
+
+If Stalwart goes down after startup the admission still succeeds and the address
+stays `reserved`. Fix the provider settings, then use **Reset access** on the
+student record; that issues a new temporary password and retries the mailbox. The
 registrar console and portal both show the status, so a mixed migration is
 visible per student.
 
@@ -193,8 +200,10 @@ MAIL_DOMAIN=atheniq.institute
 ```
 
 The service refuses to start in production with an unset or short
-`SESSION_SECRET`, no registrar credential, or `COOKIE_SECURE=false`. A service
-that starts insecurely is worse than one that explains why it will not start.
+`SESSION_SECRET`, no registrar credential, `COOKIE_SECURE=false`, or a failing
+Stalwart preflight (unreachable `STALWART_URL`, rejected `STALWART_TOKEN`, or a
+`MAIL_DOMAIN` that Stalwart does not serve). A service that starts misconfigured
+is worse than one that explains why it will not start.
 
 **Backups.** `institution-data` is the whole institution record. Back it up on a
 schedule, restore it into a scratch container monthly, and keep the copy off the

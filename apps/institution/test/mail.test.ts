@@ -101,13 +101,49 @@ test("explains a missing Stalwart domain", async () => {
   );
 });
 
-test("does not leak the API key when Stalwart refuses the request", async () => {
+test("names a rejected API key without leaking it", async () => {
   const fetcher = (async () => new Response("unauthorized", { status: 401 })) as typeof fetch;
   await assert.rejects(
     mailer(fetcher).ensureAccount("ada.lovelace@atheniq.institute", "temp-pass", "Ada"),
     (error: unknown) =>
       error instanceof MailError &&
-      /Stalwart answered 401/.test(error.message) &&
+      /refused the API key \(401\)/.test(error.message) &&
       !error.message.includes("API_test_token_value"),
+  );
+});
+
+test("preflight passes when the configured domain answers", async () => {
+  const { calls, fetcher } = fake((call) => reply(call.method, { ids: ["domain-1"] }));
+  await mailer(fetcher).preflight();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.method, "x:Domain/query");
+});
+
+test("preflight reports an unreachable URL", async () => {
+  const fetcher = (async () => {
+    throw new TypeError("fetch failed");
+  }) as typeof fetch;
+  await assert.rejects(
+    mailer(fetcher).preflight(),
+    (error: unknown) =>
+      error instanceof MailError &&
+      /unreachable at https:\/\/mail\.innotel\.us/.test(error.message),
+  );
+});
+
+test("preflight reports a rejected token", async () => {
+  const fetcher = (async () => new Response("forbidden", { status: 403 })) as typeof fetch;
+  await assert.rejects(
+    mailer(fetcher).preflight(),
+    (error: unknown) =>
+      error instanceof MailError && /refused the API key \(403\)/.test(error.message),
+  );
+});
+
+test("preflight reports a missing domain", async () => {
+  const { fetcher } = fake((call) => reply(call.method, { ids: [] }));
+  await assert.rejects(
+    mailer(fetcher).preflight(),
+    (error: unknown) => error instanceof MailError && /no domain atheniq\.institute/.test(error.message),
   );
 });
