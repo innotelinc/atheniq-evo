@@ -58,9 +58,21 @@ npm run check                 # typecheck + the bridge's integration suite
 docker compose up -d          # bridge + AI classroom + console
 ```
 
-`npm run check` is the honest gate: `tsc` over the bridge, then 29 tests that
-start the real HTTP server against fake OpenMAIC, LMS, console and OmniRoute, and
-assert on what the bridge *sent*.
+`npm run check` is the honest gate: a Compose guard, `tsc` over the bridge, then
+29 tests that start the real HTTP server against fake OpenMAIC, LMS, console and
+OmniRoute, and assert on what the bridge *sent*.
+
+### One Compose rule
+
+Compose expands `${VAR}` in `docker-compose.yml` and in `environment:`, but **not
+in a file passed via `env_file:`** — it copies those verbatim. A derived value in
+`env_file` therefore reaches the container as the literal text `${VAR}`, and the
+symptom appears far from the cause ("every classroom token is invalid").
+
+So: `env_file` holds literal files only (`.env`), derived values live in
+`environment:`, and Open edX's settings are YAML that is **mounted**. `npm run
+check:compose` fails the build if that ever stops being true; it was written
+against the first draft of this file and catches it.
 
 Fill in `.env` before starting anything with real traffic:
 
@@ -93,8 +105,7 @@ patches/
   atheniq-console/      award service, internal API, launch route, portal button
 deploy/
   openmaic/             OmniRoute model config
-  openedx/              LMS settings and the service-user script
-  signara/              the API's estate settings
+  openedx/              LMS settings (YAML, mounted) and the service-user script
 scripts/bootstrap.sh    fetch pinned upstreams, apply patches, check they still apply
 upstream.lock.json      the four repositories and the exact commits
 docs/                   architecture, contract, runbook

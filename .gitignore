@@ -16,6 +16,9 @@ logs/
 # Fetched upstreams — pinned in upstream.lock.json, never vendored
 upstream/
 
+# Machine-local development scaffolding (e.g. a portable Postgres)
+.local/
+
 # Node
 node_modules/
 .next/

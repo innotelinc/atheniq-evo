@@ -35,9 +35,19 @@ The order matters: each step proves one credential before the next depends on it
    *Health* page probes it and reports a rejected key as rejected, not as
    "unavailable".
 6. **Start.** `docker compose up -d`. Then check `curl -s localhost:8787/health`:
-   every check should be `ok`; `not_configured` means a variable is missing, and
-   `failed` names the host and status.
-7. **Prove the loop** with a throwaway course and learner: press *AI classroom*
+every check should be `ok`; `not_configured` means a variable is missing, and
+`failed` names the host and status.
+7. **Prove the secrets arrived expanded, not literal.** `env_file` is copied
+   verbatim, so a `${…}` left in one shows up inside the container as text.
+   ```bash
+   docker compose exec openmaic printenv | grep ATHENIQ_BRIDGE
+   # ATHENIQ_BRIDGE_JWT_SECRET=<64 hex chars>   ← good
+   # ATHENIQ_BRIDGE_JWT_SECRET=${BRIDGE_JWT_SECRET}   ← the bug this guards
+   docker compose config | grep -A3 ATHENIQ_BRIDGE_JWT_SECRET
+   ```
+   Both lines must match the value in `.env`. `npm run check:compose` catches the
+   static case before it ever reaches a container.
+8. **Prove the loop** with a throwaway course and learner: press *AI classroom*
    in the portal, finish the module, then open the candidate's record in the
    console. You should see the completion, the enrollment closed, and — if the
    course is in the catalog and the certificate was requested — an award with a

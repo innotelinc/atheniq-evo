@@ -10,12 +10,19 @@
 #   docker compose --profile lms up -d            # + Open edX LMS and CMS
 #   docker compose --profile signara up -d        # + Signara's API
 #
-# Every secret comes from .env. Nothing here holds a key in clear text.
+# ── Where values may live ────────────────────────────────────────────────────
+# Compose interpolates `${VAR}` in *this file* (and in `environment:`), but NOT
+# inside a file referenced by `env_file:` — those are copied into the container
+# literally. So:
+#
+#   env_file:      only literal files (.env). Never a file with ${…} in it.
+#   environment:   anything derived from another value, `${…}` is expanded here.
+#   YAML settings:   mounted as YAML (deploy/openedx/lms.env.yml), never env_file.
+#
+# `npm run check:compose` (part of `npm run check`) fails the build if a file
+# passed via env_file ever contains `${…}` again.
 
 name: atheniq-evo
-
-x-atheniq-env: &atheniq-env
-  ATHENIQ_ORG: ${ATHENIQ_ORG:-AthenIQ Institute}
 
 services:
   bridge:
@@ -23,9 +30,12 @@ services:
       context: .
       dockerfile: apps/bridge/Dockerfile
     restart: unless-stopped
+    # .env holds literal values only, so copying it is safe and intended here:
+    # the bridge is the one service that legitimately reads most of them.
     env_file: .env
     environment:
       PORT: 8787
+      ATHENIQ_ORG: ${ATHENIQ_ORG:-AthenIQ Institute}
       BRIDGE_ORIGIN: ${BRIDGE_ORIGIN:-http://localhost:8787}
       BRIDGE_DATA_DIR: /data
       OPENMAIC_BASE_URL: http://openmaic:3000
@@ -45,14 +55,23 @@ services:
     build:
       context: ./upstream/OpenMAIC
     restart: unless-stopped
-    env_file:
-      - .env
-      - deploy/openmaic/env.fragment
+    env_file: .env
     environment:
-      <<: *atheniq-env
-      DATABASE_URL: postgres://openmaic:${POSTGRES_PASSWORD:-openmaic-dev}@postgres:5432/openmaic
-      ATHENIQ_BRIDGE_URL: http://bridge:8787
+      # ── estate ────────────────────────────────────────────────────────────
+      ATHENIQ_ORG: ${ATHENIQ_ORG:-AthenIQ Institute}
+      DATABASE_URL: postgres://openmaic:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/openmaic
       NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=2048
+      # ── AthenIQ identity + completion callback ────────────────────────────
+      # Expanded here, from .env: an env_file copy would arrive as the literal
+      # text "${BRIDGE_JWT_SECRET}" and every classroom token would fail to
+      # verify — a failure that looks like a signature bug, not a config one.
+      ATHENIQ_BRIDGE_JWT_SECRET: ${BRIDGE_JWT_SECRET:?set BRIDGE_JWT_SECRET in .env}
+      ATHENIQ_BRIDGE_URL: http://bridge:8787
+      ATHENIQ_BRIDGE_HOOK_SECRET: ${BRIDGE_HOOK_SECRET:?set BRIDGE_HOOK_SECRET in .env}
+      # ── ownership ─────────────────────────────────────────────────────────
+      # The bridge is the identity source; this install is not a personal one.
+      OWNER_SINGLE_USER: "false"
     volumes:
       - openmaic-data:/app/data
       - ./deploy/openmaic/openmaic.yml:/app/openmaic.yml:ro
@@ -71,8 +90,11 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      <<: *atheniq-env
+      ATHENIQ_ORG: ${ATHENIQ_ORG:-AthenIQ Institute}
       ATHENIQ_BRIDGE_URL: http://bridge:8787
+      # The console accepts the bridge's service calls with this value; it is
+      # the same secret, named from the console's side.
+      ATHENIQ_BRIDGE_SERVICE_TOKEN: ${BRIDGE_SERVICE_TOKEN:?set BRIDGE_SERVICE_TOKEN in .env}
       ATHENIQ_CLASSROOM_COOKIE_DOMAIN: ${CLASSROOM_COOKIE_DOMAIN:-}
       LMS_BASE_URL: ${LMS_PUBLIC_URL:-http://localhost:18000}
       CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:3100}
@@ -90,7 +112,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: openmaic
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openmaic-dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: openmaic
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -110,7 +132,14 @@ services:
     build:
       context: ./upstream/openedx-platform
     command: ["gunicorn", "--bind", "0.0.0.0:18000", "lms.wsgi:application"]
-    env_file: [.env, deploy/openedx/lms.env.fragment]
+    env_file: .env
+    environment:
+      SERVICE_VARIANT: lms
+    volumes:
+      # Open edX reads its settings as YAML. Passing this file through env_file
+      # would have handed Django a dict-shaped "environment variable" and no
+      # settings at all.
+      - ./deploy/openedx/lms.env.yml:/openedx/config/lms.env.yml:ro
     ports:
       - "18000:18000"
     networks: [atheniq]
@@ -120,7 +149,11 @@ services:
     build:
       context: ./upstream/openedx-platform
     command: ["gunicorn", "--bind", "0.0.0.0:18010", "cms.wsgi:application"]
-    env_file: [.env, deploy/openedx/lms.env.fragment]
+    env_file: .env
+    environment:
+      SERVICE_VARIANT: cms
+    volumes:
+      - ./deploy/openedx/lms.env.yml:/openedx/config/lms.env.yml:ro
     ports:
       - "18010:18010"
     networks: [atheniq]
@@ -131,7 +164,12 @@ services:
     profiles: [signara]
     build:
       context: ./upstream/signara
-    env_file: [.env, deploy/signara/env.fragment]
+    env_file: .env
+    environment:
+      API_PUBLIC_URL: ${SIGNARA_API_URL:-https://api.signara.innotel.us}
+      CORS_ORIGINS: ${CONSOLE_ORIGIN:-http://localhost:3100}
+      # Never derived from a request Host header.
+      TRUST_PROXY: "false"
     ports:
       - "4000:4000"
     networks: [atheniq]
