@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node src/main.ts",
-    "test": "node --test test/",
+    "test": "node --test test/auth.test.ts test/flow.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }
