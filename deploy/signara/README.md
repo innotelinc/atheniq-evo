@@ -117,12 +117,63 @@ Until a key is present the console still records the award, as
 
 ## Current state
 
-The Signara application is **not deployed** in this estate yet. Every
-`*.signara.innotel.us` host currently answers with the project's static landing
-page, and `api.`/`auth.`/`storage.` have no TLS vhost at all, so
-`https://api.signara.innotel.us/ready` does not resolve to an API. Until the
-stack above runs on a Docker host and those four hostnames are attached to it,
-awards stay `queued_local` and the institution's verify button stays hidden.
+Signara exists as a **Coolify resource** in this estate and has not yet served a
+request successfully. What is set up (instance `deploy.innotel.us`, server
+`i2-local` = `192.168.1.52`, project **AthenIQ**):
+
+| Setting | Value |
+| --- | --- |
+| Resource | `signara`, type **Docker Compose** |
+| Source | `github.com/innotelinc/signara`, branch `main`, public repo |
+| Compose file | `/docker-compose.prod.yml` |
+| Host ports | web `13000` → 3000, api `18000` → 8000 |
+| Profiles | `authentik` off (`AUTHENTIK_MODE=remote`), `legacy-storage` off |
+
+`8000` is not usable on that host: it belongs to Coolify itself, and a stack
+that binds it fails with `port already allocated`. The 18xxx/13xxx pair is why
+the published ports differ from upstream's defaults.
+
+Forty environment variables are stored in Coolify, with every secret generated
+there and never written to this repository: `POSTGRES_PASSWORD`,
+`REDIS_PASSWORD`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`,
+`CRYPTO_MASTER_KEY`, `MEILISEARCH_API_KEY`, the two `SIGNARA_S3_*` keys.
+`DATABASE_URL` and `REDIS_URL` are derived from those parts, and the OIDC values
+point at `https://auth.cerulean.innotel.us/application/o/signara/`.
+
+Two deployments have run:
+
+1. `co6a9fkpcqt55qmblcbakofw` — finished `exited:unhealthy`. Coolify had imported
+   the repository's `.env.example` twice, so every key existed in duplicate and
+   `POSTGRES_PASSWORD` could resolve to `change-me-postgres` in one container and
+   the generated value in another.
+2. `p6bnmblziyzwx49ob6lyelur` — queued after all 116 duplicate rows were deleted
+   and the clean set written. **Its result was never observed**: Coolify stopped
+   answering at that point and has not been reachable since.
+
+## Remaining blockers
+
+1. **No object store.** ONYX at `192.168.1.71:2090` refuses connections, and
+   MinIO in this stack is profile-gated on purpose (its images are no longer
+   pullable). Documents cannot be written until ONYX is back or a bucket is
+   pointed at via `SIGNARA_S3_ENDPOINT` / `SIGNARA_S3_*`.
+2. **No OIDC application.** Nothing in the estate yet provides
+   `application/o/signara/` at `auth.cerulean.innotel.us` or the `signara-admins`
+   group. Without it nobody can sign in, and an API key cannot be minted, so the
+   console stays on `queued_local`.
+3. **No public route.** `api.` and `app.signara.innotel.us` both resolve to
+   `73.68.203.71` and terminate on the `.71` edge, which has no `api.` vhost.
+   The Coolify stack listens on `192.168.1.52:13000` and `:18000`, reachable on
+   the LAN only.
+4. **Coolify itself is down.** `deploy.innotel.us` accepts TCP on 443 and then
+   hangs while the rest of the edge serves normally (workforce, mail), so the
+   pending deployment above is not cancelled and the API tokens created during
+   setup are not yet revoked. Restart the Coolify container on `.52` first.
+
+Fix order: restart Coolify and cancel the pending deployment → revoke the
+setup tokens (`atheniq-deploy`, `atheniq-signara`, `atheniq-root` in Keys &
+Tokens) → bring ONYX back → create the Authentik application and group → add an
+`api.signara.innotel.us` vhost pointing at `192.168.1.52:18000` → create the API
+key and set `SIGNARA_API_URL`, `SIGNARA_API_KEY` and `CREDENTIAL_VERIFY_URL`.
 
 ## Checks that matter
 
