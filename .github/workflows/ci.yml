@@ -67,10 +67,10 @@ jobs:
       - name: Compose resolves the default profile
         run: docker compose config --quiet
 
+      # lms is the only opt-in profile left; Signara brings its own compose file
+      # (deploy/signara/README.md), so there is nothing here to resolve for it.
       - name: Compose resolves the opt-in profiles
-        run: |
-          docker compose --profile lms config --quiet
-          docker compose --profile signara config --quiet
+        run: docker compose --profile lms config --quiet
 
       # This is the check Compose itself performs. If a derived value lived in
       # env_file, it would not appear in the resolved environment at all; if it
