@@ -15,6 +15,11 @@ import type { InstitutionConfig } from "./config.ts";
 export interface Mailer {
   /** "stalwart" — used in notices and the mailbox record. */
   readonly provider: string;
+  /**
+   * False when the provider keeps passwords in an external directory (OIDC or
+   * LDAP), where a mailbox is created but its password is not Stalwart's to set.
+   */
+  readonly passwordManaged: boolean;
   /** Prove the provider is reachable and configured before the service listens. */
   preflight(): Promise<void>;
   /** Create the account, or update its password if it already exists. */
@@ -41,6 +46,8 @@ export class StalwartMailer implements Mailer {
   private readonly quotaBytes: number;
   private readonly fetcher: typeof fetch;
   private domainId: string | null = null;
+  /** Set once Stalwart says the account's credentials live elsewhere. */
+  private externalDirectory = false;
 
   constructor(options: StalwartOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
@@ -59,17 +66,79 @@ export class StalwartMailer implements Mailer {
     await this.stalwartDomainId();
   }
 
+  get passwordManaged(): boolean {
+    return !this.externalDirectory;
+  }
+
   async ensureAccount(address: string, password: string, displayName: string): Promise<void> {
     const { local, domain } = this.split(address);
     const domainId = await this.stalwartDomainId();
-    const result = await this.jmap("x:Account/set", {
+
+    // At most two attempts: the first may learn that the directory owns
+    // passwords, so the second creates the mailbox without one.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const withPassword = !this.externalDirectory;
+      const result = await this.createAccount(local, domainId, displayName, withPassword ? password : null);
+
+      const created = result.created as Record<string, { id?: string }> | undefined;
+      if (created?.new1?.id) return;
+
+      const failure = (result.notCreated as Record<string, { type?: string; existingId?: string; description?: string }> | undefined)?.new1;
+      if (failure?.existingId) {
+        await this.setPassword(failure.existingId, password);
+        return;
+      }
+
+      // A concurrent or earlier attempt created the same address. Stalwart
+      // reports that as primaryKeyViolation (older builds: alreadyExists) and
+      // does not always return the id, so look the account up by address.
+      if (/primaryKeyViolation|alreadyExists/i.test(String(failure?.type ?? ""))) {
+        const existing = await this.accountIdFor(local, address);
+        if (existing) {
+          await this.setPassword(existing, password);
+          return;
+        }
+      }
+
+      // A server whose directory is OIDC or LDAP refuses passwords: the mailbox
+      // is still ours to create, but the student signs in to mail through that
+      // directory instead.
+      if (withPassword && /external directory/i.test(String(failure?.description ?? ""))) {
+        this.externalDirectory = true;
+        continue;
+      }
+
+      const reason = failure?.description ?? failure?.type ?? "unknown error";
+      throw new MailError(`Stalwart could not create ${local}@${domain}: ${reason}`);
+    }
+    throw new MailError(`Stalwart could not create ${local}@${domain}: account already exists`);
+  }
+
+  /** The account id for an address, used when a duplicate create gives none. */
+  private async accountIdFor(local: string, address: string): Promise<string | null> {
+    const result = await this.jmap("x:Account/query", { filter: { name: local } });
+    const ids = Array.isArray(result.ids) ? result.ids.map(String) : [];
+    if (ids.length === 0) return null;
+    const got = await this.jmap("x:Account/get", { ids });
+    const list = Array.isArray(got.list) ? (got.list as Array<{ id?: string; emailAddress?: string }>) : [];
+    const match = list.find((account) => (account.emailAddress ?? "").toLowerCase() === address.toLowerCase());
+    return match?.id ?? ids[0] ?? null;
+  }
+
+  private createAccount(
+    local: string,
+    domainId: string,
+    displayName: string,
+    password: string | null,
+  ): Promise<Record<string, unknown>> {
+    return this.jmap("x:Account/set", {
       create: {
         new1: {
           "@type": "User",
           name: local,
           domainId,
           description: displayName.slice(0, 200),
-          credentials: { "0": { "@type": "Password", secret: password } },
+          ...(password ? { credentials: { "0": { "@type": "Password", secret: password } } } : {}),
           aliases: {},
           memberGroupIds: {},
           roles: { "@type": "User" },
@@ -79,21 +148,6 @@ export class StalwartMailer implements Mailer {
         },
       },
     });
-
-    const created = result.created as Record<string, { id?: string }> | undefined;
-    if (created?.new1?.id) return;
-
-    // A concurrent or earlier attempt may have created the same address. Update
-    // that account instead of leaving the reservation stuck.
-    const notCreated = result.notCreated as
-      | Record<string, { type?: string; existingId?: string; description?: string }>
-      | undefined;
-    if (notCreated?.new1?.existingId) {
-      await this.setPassword(notCreated.new1.existingId, password);
-      return;
-    }
-    const reason = notCreated?.new1?.description ?? notCreated?.new1?.type ?? "unknown error";
-    throw new MailError(`Stalwart could not create ${local}@${domain}: ${reason}`);
   }
 
   private split(address: string): { local: string; domain: string } {
@@ -120,13 +174,19 @@ export class StalwartMailer implements Mailer {
   }
 
   private async setPassword(accountId: string, password: string): Promise<void> {
+    if (this.externalDirectory) return;
     const result = await this.jmap("x:Account/set", {
       update: { [accountId]: { "credentials/0/secret": password } },
     });
     const notUpdated = result.notUpdated as Record<string, { description?: string }> | undefined;
-    if (notUpdated?.[accountId]) {
-      throw new MailError(`Stalwart could not set the mailbox password: ${notUpdated[accountId].description ?? "unknown error"}`);
+    const failure = notUpdated?.[accountId];
+    if (!failure) return;
+    // The directory owns the password; the mailbox itself is unaffected.
+    if (/external directory/i.test(String(failure.description ?? ""))) {
+      this.externalDirectory = true;
+      return;
     }
+    throw new MailError(`Stalwart could not set the mailbox password: ${failure.description ?? "unknown error"}`);
   }
 
   private async jmap(method: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {

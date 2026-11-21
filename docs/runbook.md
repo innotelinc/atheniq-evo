@@ -315,7 +315,7 @@ command line. Do not use one.
 `.github/workflows/ci.yml` runs three jobs:
 
 1. **typecheck and tests** — `npm ci && npm run check` (static Compose guard,
-   `tsc` for the bridge and the institution, 55 tests).
+   `tsc` for the bridge and the institution, 58 tests).
 2. **compose interpolation** — on a Docker runner, generates a literal `.env`,
    runs `docker compose config` for the default and both opt-in profiles, then
    asserts that Compose's *resolved* model contains the `.env` values rather

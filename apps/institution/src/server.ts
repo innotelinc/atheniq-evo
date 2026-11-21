@@ -424,7 +424,9 @@ route("registrar", "POST", "/applications/:id/decision", async ({ config, regist
   const mailboxNote = !student
     ? ""
     : mailbox === "active"
-      ? ` The mailbox is active at ${mailer?.provider ?? "the provider"}.`
+      ? mailer && !mailer.passwordManaged
+        ? " The mailbox is active; mail sign-in uses the mail server's single sign-on rather than the temporary password."
+        : ` The mailbox is active at ${mailer?.provider ?? "the provider"}.`
       : mailer
         ? " The mailbox is still reserved; fix the Stalwart settings and reset the student's access to retry."
         : " The address is reserved because mail delivery is not configured.";
@@ -472,7 +474,9 @@ route("registrar", "POST", "/students/:id/reset", async ({ config, registry, mai
   const notice = !mailer
     ? "Access reset. Hand the temporary password over securely."
     : mailbox === "active"
-      ? "Access reset. The mailbox password was updated. Hand the temporary password over securely."
+      ? mailer.passwordManaged
+        ? "Access reset. The mailbox password was updated. Hand the temporary password over securely."
+        : "Access reset. The portal password changed; mail sign-in is unchanged because the mail server uses single sign-on."
       : "Access reset. The portal password changed, but the mailbox could not be updated. Fix the Stalwart settings and reset again.";
   return html(
     200,

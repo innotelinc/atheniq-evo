@@ -94,9 +94,12 @@ source of truth for who exists; Stalwart is the delivery system.
    `MAIL_DOMAIN` (`atheniq.institute` by default). If the Stalwart domain is
    `innotel.us`, set `MAIL_DOMAIN=innotel.us` so issued addresses and accounts
    agree; the service refuses to provision an address outside that domain.
-2. **Create an API key** with `sysDomainQuery`, `sysAccountCreate` and
-   `sysAccountUpdate`. Put it in `STALWART_TOKEN`. The key is a bearer credential
-   and must stay out of the browser and version control.
+2. **Create an API key** under Account › Credentials › API Keys and put it in
+   `STALWART_TOKEN`. Give it `Inherit` permissions. Stalwart refuses an account
+   change when the caller does not hold every permission of the target account,
+   so a key narrowed to the `sys*` names alone cannot create a normal user: it
+   answers `not authorized to grant permissions: jmapQuotaGet …`. The key is a
+   bearer credential and must stay out of the browser and version control.
 3. **Set** `MAIL_PROVIDER=stalwart` and `STALWART_URL=https://mail.innotel.us`.
    `STALWART_QUOTA_BYTES` is optional (`0` means no per-mailbox quota).
 4. **Publish** MX, SPF, DKIM and DMARC for the mail domain. Stalwart's domain
@@ -105,6 +108,17 @@ source of truth for who exists; Stalwart is the delivery system.
    active, and the student's temporary password should open both the portal and
    the mailbox. Changing the portal password or resetting access updates the
    Stalwart credential as well.
+
+**When the mail server authenticates through a directory.** Stalwart can run on
+an internal directory or on an external one (OIDC, LDAP, SQL). With an external
+directory — the usual setup when single sign-on already exists — the server
+refuses any password on an account (`Cannot set credentials for accounts in an
+external directory`), and on the open-source edition that applies to every
+domain, whatever a domain's own `directoryId` says. The service detects this on
+the first admission: it creates the mailbox without a credential, and the
+student signs in to mail through the directory rather than with the temporary
+password. The registrar's confirmation says so. Portal passwords and mail
+passwords are then separate systems, which is the point of SSO.
 
 At startup the service runs one `x:Domain/query` for `MAIL_DOMAIN`. That single
 call proves all three settings: the URL answers, the key is accepted, and the

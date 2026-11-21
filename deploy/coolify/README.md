@@ -18,10 +18,10 @@ answer. To publish the console later, give it its own hostname (for example
 - The repository must be pushed to the Git remote Coolify can read.
 - DNS for `atheniq.innotel.site` and `registrar.innotel.site` must point at the
   Coolify server (A/AAAA, or CNAME to its hostname).
-- The Stalwart domain must already exist, its API key must hold
-  `sysDomainQuery`, `sysAccountCreate` and `sysAccountUpdate`, and
-  `https://mail.innotel.us/jmap/` must answer. The service checks all three at
-  startup, so a wrong URL, key or domain fails the deploy before it serves a page.
+- The Stalwart domain must already exist, the API key must grant `Inherit`
+  permissions (Stalwart refuses account writes from a narrowed key), and
+  `https://mail.innotel.us/jmap/` must answer. The service checks URL, key and
+  domain at startup, so a wrong value fails the deploy before it serves a page.
 
 ## 1. Create the resource
 
@@ -129,7 +129,7 @@ atheniq-institution: mail preflight failed: <reason>
 | Reason | What it means | Fix |
 | --- | --- | --- |
 | `Stalwart is unreachable at https://…` | DNS, TLS or the host is down | Correct `STALWART_URL`, or bring Stalwart up |
-| `Stalwart refused the API key (401)` | The bearer token is wrong, expired, or lacks permissions | Put a new key in `STALWART_TOKEN` with the three `sys*` permissions |
+| `Stalwart refused the API key (401)` | The bearer token is wrong or expired | Put a new key with `Inherit` permissions in `STALWART_TOKEN` |
 | `Stalwart refused the API key (403)` | The key exists but may not query domains | Grant `sysDomainQuery` to the key's account |
 | `Stalwart has no domain atheniq.institute` | `MAIL_DOMAIN` is not a domain in Stalwart | Create the domain in Stalwart, or set `MAIL_DOMAIN` to one that exists |
 

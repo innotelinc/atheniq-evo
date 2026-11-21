@@ -112,6 +112,73 @@ test("names a rejected API key without leaking it", async () => {
   );
 });
 
+test("creates a passwordless mailbox when the directory owns passwords", async () => {
+  const { calls, fetcher } = fake((call) => {
+    if (call.method === "x:Domain/query") return reply(call.method, { ids: ["domain-1"] });
+    const create = call.args.create as Record<string, Record<string, unknown>> | undefined;
+    if (create?.new1?.credentials) {
+      return reply(call.method, {
+        notCreated: {
+          new1: { type: "forbidden", description: "Cannot set credentials for accounts in an external directory." },
+        },
+      });
+    }
+    return reply(call.method, { created: { new1: { id: "account-2" } } });
+  });
+
+  const stalwart = mailer(fetcher);
+  assert.equal(stalwart.passwordManaged, true);
+
+  await stalwart.ensureAccount("ada.lovelace@atheniq.institute", "temp-pass", "Ada Lovelace");
+
+  assert.equal(calls.length, 3);
+  assert.equal(stalwart.passwordManaged, false);
+  const retry = calls[2]?.args.create as Record<string, Record<string, unknown>>;
+  assert.equal(retry.new1?.name, "ada.lovelace");
+  assert.equal(retry.new1?.credentials, undefined, "the retry must not send a password");
+});
+
+test("stops trying to set a password once the directory owns it", async () => {
+  const { calls, fetcher } = fake((call) => {
+    if (call.method === "x:Domain/query") return reply(call.method, { ids: ["domain-1"] });
+    if ("create" in call.args) {
+      return reply(call.method, { notCreated: { new1: { type: "alreadyExists", existingId: "account-1" } } });
+    }
+    return reply(call.method, {
+      notUpdated: { "account-1": { type: "forbidden", description: "Cannot set credentials for accounts in an external directory." } },
+    });
+  });
+
+  const stalwart = mailer(fetcher);
+  await stalwart.ensureAccount("ada.lovelace@atheniq.institute", "new-pass", "Ada Lovelace");
+  assert.equal(stalwart.passwordManaged, false);
+
+  const before = calls.length;
+  await stalwart.ensureAccount("ada.lovelace@atheniq.institute", "another-pass", "Ada Lovelace");
+  assert.equal(calls.length, before + 1, "the second call must not attempt a password update");
+});
+
+test("finds the existing account when a duplicate create returns no id", async () => {
+  const { calls, fetcher } = fake((call) => {
+    if (call.method === "x:Domain/query") return reply(call.method, { ids: ["domain-1"] });
+    if (call.method === "x:Account/get") {
+      return reply(call.method, {
+        list: [{ id: "account-9", emailAddress: "ada.lovelace@atheniq.institute" }],
+      });
+    }
+    if (call.method === "x:Account/query") return reply(call.method, { ids: ["account-9"] });
+    if ("create" in call.args) {
+      return reply(call.method, { notCreated: { new1: { type: "primaryKeyViolation" } } });
+    }
+    return reply(call.method, { notUpdated: {} });
+  });
+
+  await mailer(fetcher).ensureAccount("ada.lovelace@atheniq.institute", "new-pass", "Ada Lovelace");
+
+  const update = calls.find((call) => "update" in call.args);
+  assert.deepEqual(update?.args, { update: { "account-9": { "credentials/0/secret": "new-pass" } } });
+});
+
 test("preflight passes when the configured domain answers", async () => {
   const { calls, fetcher } = fake((call) => reply(call.method, { ids: ["domain-1"] }));
   await mailer(fetcher).preflight();

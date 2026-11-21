@@ -66,7 +66,7 @@ Then open `http://atheniq.localhost:8080` for the public site and
 
 `npm run check` is the honest gate: a Compose guard, `tsc` over the bridge and
 the institution, 29 bridge tests that start the real HTTP server against fake
-OpenMAIC, LMS, console and OmniRoute, and 26 institution tests covering the
+OpenMAIC, LMS, console and OmniRoute, and 29 institution tests covering the
 application → admission → account → registration lifecycle and the Stalwart
 JMAP calls and startup preflight against a fake server.
 
@@ -150,7 +150,7 @@ Run: `npm run check`.
   stale-signature refusal, course/learner mismatch, unknown classroom, per-step
   retry, credential idempotency, gateway model list, and the token rules
   (expiry, audience, issuer, tampering, algorithm, weak signature).
-- **26 institution tests pass**: curriculum integrity, application validation,
+- **29 institution tests pass**: curriculum integrity, application validation,
   admission issuing one account and a unique `@atheniq.institute` address,
   mailbox activation, Stalwart account creation and password updates, the
   startup preflight (unreachable URL, rejected key, missing domain), the
