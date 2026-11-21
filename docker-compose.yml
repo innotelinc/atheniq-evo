@@ -3,12 +3,14 @@
 # The default profile is the integration: the bridge, the AI classroom and the
 # console, on one network, wired to each other and to OmniRoute.
 #
-# Open edX and Signara are large and have their own upstream deployment guides,
-# so they are opt-in profiles rather than default services:
+# Open edX is large and has its own upstream deployment guide, so it is an
+# opt-in profile rather than a default service. Signara is not run from this
+# file at all — it brings its own database, cache, storage and search:
 #
 #   docker compose up -d                          # bridge + classroom + console
 #   docker compose --profile lms up -d            # + Open edX LMS and CMS
-#   docker compose --profile signara up -d        # + Signara's API
+#   Signara is not a service here: it needs its own PostgreSQL, Redis, ONYX
+#   bucket, Meilisearch and Authentik application. See deploy/signara/README.md.
 #
 # ── Where values may live ────────────────────────────────────────────────────
 # Compose interpolates `${VAR}` in *this file* (and in `environment:`), but NOT
@@ -207,20 +209,6 @@ services:
 
   # Signara's API. Its database, object storage and OIDC provider are its own
   # deployment's concern (upstream ships docker-compose.prod.yml).
-  signara-api:
-    profiles: [signara]
-    build:
-      context: ./upstream/signara
-    env_file: .env
-    environment:
-      API_PUBLIC_URL: ${SIGNARA_API_URL:-https://api.signara.innotel.us}
-      CORS_ORIGINS: ${CONSOLE_ORIGIN:-http://localhost:3100}
-      # Never derived from a request Host header.
-      TRUST_PROXY: "false"
-    ports:
-      - "4000:4000"
-    networks: [atheniq]
-
 volumes:
   bridge-data:
   openmaic-data:
