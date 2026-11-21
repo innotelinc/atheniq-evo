@@ -140,15 +140,14 @@ there and never written to this repository: `POSTGRES_PASSWORD`,
 `DATABASE_URL` and `REDIS_URL` are derived from those parts, and the OIDC values
 point at `https://auth.cerulean.innotel.us/application/o/signara/`.
 
-Two deployments have run:
-
-1. `co6a9fkpcqt55qmblcbakofw` — finished `exited:unhealthy`. Coolify had imported
-   the repository's `.env.example` twice, so every key existed in duplicate and
-   `POSTGRES_PASSWORD` could resolve to `change-me-postgres` in one container and
-   the generated value in another.
-2. `p6bnmblziyzwx49ob6lyelur` — queued after all 116 duplicate rows were deleted
-   and the clean set written. **Its result was never observed**: Coolify stopped
-   answering at that point and has not been reachable since.
+Two deployments have run. The first finished `exited:unhealthy` because Coolify
+had imported the repository's `.env.example` twice, so every key existed in
+duplicate and `POSTGRES_PASSWORD` could resolve to `change-me-postgres` in one
+container and the generated value in another. All 116 duplicate rows were
+then deleted, the clean set written, and a second deployment queued. Both
+attempts are now recorded as **Failed** in the app's deployment history and
+nothing is queued or running; the compose project's containers sit in a restart
+loop until the blockers below are cleared.
 
 ## Remaining blockers
 
@@ -164,14 +163,12 @@ Two deployments have run:
    `73.68.203.71` and terminate on the `.71` edge, which has no `api.` vhost.
    The Coolify stack listens on `192.168.1.52:13000` and `:18000`, reachable on
    the LAN only.
-4. **Coolify itself is down.** `deploy.innotel.us` accepts TCP on 443 and then
-   hangs while the rest of the edge serves normally (workforce, mail), so the
-   pending deployment above is not cancelled and the API tokens created during
-   setup are not yet revoked. Restart the Coolify container on `.52` first.
+4. **Coolify has been unstable.** `deploy.innotel.us` has repeatedly accepted
+   TCP on 443 and then hung while the rest of the edge served normally
+   (workforce, mail), which is what left the second deployment above in an
+   unknown state.
 
-Fix order: restart Coolify and cancel the pending deployment → revoke the
-setup tokens (`atheniq-deploy`, `atheniq-signara`, `atheniq-root` in Keys &
-Tokens) → bring ONYX back → create the Authentik application and group → add an
+Fix order: bring ONYX back → create the Authentik application and group → add an
 `api.signara.innotel.us` vhost pointing at `192.168.1.52:18000` → create the API
 key and set `SIGNARA_API_URL`, `SIGNARA_API_KEY` and `CREDENTIAL_VERIFY_URL`.
 
