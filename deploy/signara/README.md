@@ -288,6 +288,11 @@ These run on **`192.168.1.53`** (the i3 deploy host), as root. None of them has
 been run from this workstation — there is no shell on the i3 box from here — so
 each *proves* line describes what success looks like, not captured output.
 
+`deploy/signara/fix-infra-mounts.sh` is the one-shot, idempotent version of steps
+1–3: copy it to the host, run it as root, and check its three `OK n/3` lines the
+way the *Proves it* lines below say to. The manual commands stay as the fallback
+for when the script cannot run; change both together.
+
 ### 0. Make the environment rows unique and complete
 
 Do this before the redeploy, or the stack comes up with the i2 failure all over
