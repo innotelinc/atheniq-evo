@@ -9,6 +9,8 @@
 #
 #   ./fix-infra-mounts.sh                                  # fetch the pinned commit
 #   ./fix-infra-mounts.sh --source /root/signara-src       # use a checkout you have
+#   ./fix-infra-mounts.sh --source /x --allow-other-commit # copy a tree that is not
+#                                                          # the pinned commit, and say so
 #   ./fix-infra-mounts.sh --smtp-password-file /root/smtp  # write the password from a file
 #   vault kv get -field=SMTP_PASSWORD cerulean/signara | ./fix-infra-mounts.sh
 #
@@ -38,14 +40,16 @@ MOUNT_SOURCES=(
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 SOURCE=""
 PW_SOURCE=""
+ALLOW_OTHER="${SIGNARA_ALLOW_OTHER_COMMIT:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --source) SOURCE="${2:-}"; shift 2 ;;
+    --allow-other-commit) ALLOW_OTHER=1; shift ;;
     --smtp-password-file) PW_SOURCE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
@@ -72,13 +76,27 @@ trap cleanup EXIT
 
 # --- work out where the real infra/ tree comes from -------------------------
 
+# The tree that gets copied is identified by the commit LABEL quotes, so the OK
+# line can only ever name what was really there.
+LABEL="${COMMIT:0:12}"
+
 if [ -n "$SOURCE" ]; then
   [ -d "$SOURCE/infra" ] || die "--source $SOURCE has no infra/ directory"
   SRC="$SOURCE"
   head="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
-  [ "$head" = "$COMMIT" ] \
-    || printf 'WARN: %s is at %s, not the pinned %s\n' \
-         "$SRC" "${head:0:12}" "${COMMIT:0:12}" >&2
+  if [ "$head" = "$COMMIT" ]; then
+    :
+  elif [ "$ALLOW_OTHER" = "1" ]; then
+    if [ -n "$head" ]; then
+      LABEL="${head:0:12}, NOT the pinned ${COMMIT:0:12}"
+    else
+      LABEL="an unversioned checkout, NOT the pinned ${COMMIT:0:12}"
+    fi
+  elif [ -n "$head" ]; then
+    die "$SRC is at ${head:0:12}, not the pinned ${COMMIT:0:12} (check that commit out, or pass --allow-other-commit to copy this tree anyway)"
+  else
+    die "$SRC is not a git checkout, so its tree cannot be shown to be ${COMMIT:0:12} (pass --allow-other-commit to copy it anyway)"
+  fi
 else
   command -v git >/dev/null || die "git is required to fetch the pinned commit"
   CLONE="$(mktemp -d)"
@@ -87,6 +105,8 @@ else
   git -C "$CLONE" fetch -q --depth 1 origin "$COMMIT" \
     || die "could not fetch ${COMMIT:0:12} from $GIT_URL (private repo: pass --source with an existing checkout)"
   git -C "$CLONE" checkout -q FETCH_HEAD
+  head="$(git -C "$CLONE" rev-parse HEAD)"
+  [ "$head" = "$COMMIT" ] || die "fetched $head, expected $COMMIT"
   SRC="$CLONE"
 fi
 [ -d "$SRC/infra" ] || die "$SRC has no infra/ directory"
@@ -113,7 +133,7 @@ if [ -d "$APP/infra" ] && [ -z "$poisoned" ] \
 fi
 
 if [ "$same" -eq 1 ]; then
-  printf 'leaving %s/infra in place: it already matches %s\n' "$APP" "${COMMIT:0:12}"
+  printf 'leaving %s/infra in place: it already matches %s\n' "$APP" "$LABEL"
 else
   if [ -d "$APP/infra" ]; then
     printf 'replacing %s/infra (mount sources that Docker made into directories)\n' "$APP"
@@ -129,7 +149,7 @@ fi
 # Count the tree without the password file, so the line reads the same on every run.
 files="$(find "$APP/infra" -type f ! -name smtp_password | wc -l | tr -d ' ')"
 printf 'OK 1/3 infra/ tree at %s matches %s (%s files, %s mount sources)\n' \
-  "$APP" "${COMMIT:0:12}" "$files" "${#MOUNT_SOURCES[@]}"
+  "$APP" "$LABEL" "$files" "${#MOUNT_SOURCES[@]}"
 
 # --- step 2: no mount source may be a directory -----------------------------
 
