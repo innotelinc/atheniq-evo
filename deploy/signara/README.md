@@ -290,8 +290,10 @@ each *proves* line describes what success looks like, not captured output.
 
 `deploy/signara/fix-infra-mounts.sh` is the one-shot, idempotent version of steps
 1–3: copy it to the host, run it as root, and check its three `OK n/3` lines the
-way the *Proves it* lines below say to. The manual commands stay as the fallback
-for when the script cannot run; change both together.
+way the *Proves it* lines below say to. It refuses to copy a `--source` tree that
+is not the pinned `6555303` commit unless you also pass `--allow-other-commit`,
+and its `OK 1/3` line names the commit it actually copied. The manual commands
+stay as the fallback for when the script cannot run; change both together.
 
 ### 0. Make the environment rows unique and complete
 
