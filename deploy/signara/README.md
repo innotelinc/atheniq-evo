@@ -470,10 +470,15 @@ not committed: at this revision `infra/secrets/` holds only `README.md`. The
 clone leaves the path missing, and a missing bind source becomes a directory
 exactly like the others, so this step is not optional.
 
-The value is a Stalwart **app password** on `registrar@atheniq.institute` — the
-mailbox the estate describes as the registrar console's alerts, digests and
-verification mail — with the description `Signara alertmanager SMTP`. A plain
-mailbox password is not an option: every domain on `mail.innotel.us` resolves to
+The value is a Stalwart **app password** on `signara@innotel.us`, a mailbox made
+for Signara alone (description `Signara alertmanager SMTP`). It is deliberately
+not an app password on `registrar@atheniq.institute`: an `AppPassword` with
+`permissions: Inherit` authenticates as the whole account on IMAP and JMAP, so
+mounting one into the api and alertmanager would have handed both containers read
+access to the registrar's verification and reset mail. `signara@` holds nothing
+but alert mail and bounces, which makes a leaked credential boring.
+
+A plain mailbox password is not an option: every domain on `mail.innotel.us` resolves to
 the Authentik OIDC directory, and Stalwart answers `Cannot set credentials for
 accounts in an external directory` to any attempt to create a local-password
 account there. App passwords are the exception; the server generates the secret
@@ -485,9 +490,10 @@ loops to the user library. Its JMAP API is reachable without SSO, and
 `x:AppPassword/set` on `/jmap/` works with the estate token:
 
 ```bash
-# on i3, estate token in a 0600 file; account da = registrar@atheniq.institute
+# on i3, estate token in a 0600 file; account dk = signara@innotel.us
+# (create the mailbox first: x:Account/set with name/domainId "b", no credentials)
 jq -n '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],methodCalls:[["x:AppPassword/set",
-  {accountId:"da",create:{new1:{description:"Signara alertmanager SMTP",
+  {accountId:"dk",create:{new1:{description:"Signara alertmanager SMTP",
   permissions:{"@type":"Inherit"},allowedIps:{}}}},"c1"]]}' \
 | curl -sS -H "Authorization: Bearer $(cat /root/.st-token.tmp)" \
     -H 'Content-Type: application/json' --data-binary @- https://mail.innotel.us/jmap/ \
@@ -498,7 +504,7 @@ Write that secret into a root-only file rather than through shell history, prove
 it authenticates, then install it:
 
 ```bash
-bash /root/provision-signara-smtp.sh test-smtp registrar@atheniq.institute   # 235 = works
+bash /root/provision-signara-smtp.sh test-smtp signara@innotel.us   # 235 = works
 bash /root/provision-signara-smtp.sh install-mount                          # --replace-password --smtp-password-file
 ```
 
@@ -508,17 +514,52 @@ The wrapper (`apppassword`, `test-smtp`, `install-mount`) keeps the secret in
 prompt is needed and the old value is copied to `/root/smtp_password.bak` (0600)
 before the mount is rewritten at 0444.
 
-Alertmanager also needs `SMTP_HOST=mail.innotel.us`,
-`SMTP_USER=registrar@atheniq.institute` and
-`SMTP_FROM=registrar@atheniq.institute` in the app's Coolify environment. The
-port defaults to 587, and the password arrives through the mounted file, not
-`SMTP_PASS`. As of 23 Nov all three are **empty** in the running container
-(`docker inspect` shows `SMTP_PORT=587`, `SMTP_HELLO=innotel.us`, and blank
-host/user/from), so alertmanager still has nothing to authenticate as until those
-rows are filled in and the app redeployed.
+Alertmanager also needs these in the app's Coolify environment — all five are
+filled as of 23 Nov 10:30 and the container runs with them:
 
-**The credential is in Vault.** `cerulean/signara` v2 holds `SMTP_PASSWORD`
-(40 bytes) beside the twelve keys it had at v1, all still present. Nothing
+```
+SMTP_HOST=mail.innotel.us        SMTP_USER=signara@innotel.us
+SMTP_FROM=signara@innotel.us     SMTP_TLS_SERVERNAME=mail.innotel.us
+ALERT_EMAIL_TO=dhunter@innotel.us
+```
+
+The port defaults to 587 (row empty, compose default applies) and the password
+arrives through the mounted file, not `SMTP_PASS`. `ALERT_EMAIL_TO` is not
+optional: without it the render has no `to`, and Alertmanager exits 1 with
+`missing to address in email config` — that is what kept the 07:00 deployment
+crash-looping.
+
+Those rows are Coolify's, in the `environment_variables` table of the Postgres
+inside the **Incus container** `coolify` on i3 (`incus exec coolify -- docker
+exec coolify-db psql …`); the portal itself is not a container on any host. Each
+key has a preview row and a production row (`is_preview=false`), and the deploy
+reads the one it is deploying. Coolify rewrites
+`/data/coolify/applications/<uuid>/.env` from those rows at deploy time, so the
+running container can be brought in line without a full portal deploy:
+
+```bash
+docker compose -p 4vzo0yw5ipz3m8cx9fuptr4d --env-file .env \
+  -f docker-compose.yaml up -d --no-deps alertmanager
+```
+
+(`.env` in that directory had no trailing newline; appending a key silently
+produced `HOST=0.0.0.0SMTP_HOST=…`, so check the tail before recreating.)
+
+Only `critical` is mailed. The route sends `severity != critical` to the
+`silent` receiver, so a test alert posted with `severity=info` will be accepted
+(HTTP 200), appear in `/api/v2/alerts`, and send nothing. Post tests as
+`severity=critical`, and use the v2 API — v1 answers 410 on 0.27.0.
+
+**Delivery is proven.** On 23 Nov 10:35:17Z a test alert
+(`SignaraSmtpDeliveryTest`) arrived at `dhunter@innotel.us` from
+`signara@innotel.us` with subject `[CRITICAL] SignaraSmtpDeliveryTest`; the two
+real pages firing at that moment (`ApiUnavailable`, `BackupJobFailed`) delivered
+the same way.
+
+**The credential is in Vault.** `cerulean/signara` v3 holds `SMTP_PASSWORD`
+(40 bytes) beside the twelve keys it had at v1, all still present — v2 was the
+registrar credential, replaced when the mailbox moved, so the same `kv patch`
+rotates it. Nothing
 reachable from i3 could do it: the OIDC token answers `sys/capabilities-self` with
 `["list","read"]` for `cerulean/data/signara` and `deny` for
 `auth/token/create`. The keys that look like candidates are not Vault tokens at
@@ -567,6 +608,9 @@ attached to no role, so only the root token can mint with it.
 **Dry run before deploying.** The entrypoint's rendering can be exercised without
 Coolify or a container — cut the script at its final `exec`, point the copy at
 the host paths, and give it the same variables the container will get:
+
+The dry run below was made before the move to `signara@innotel.us`; only the
+addresses differ from the values now in the container.
 
 ```bash
 APP=/data/coolify/applications/4vzo0yw5ipz3m8cx9fuptr4d
