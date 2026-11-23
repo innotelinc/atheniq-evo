@@ -179,8 +179,34 @@ nothing while it runs, so the long silence was a slow build rather than a stall.
 From 16:58:20 it removed the old containers and created and started the new set,
 then died at 17:01:15 on the same bind mount as before — `error mounting
 ".../infra/monitoring/alertmanager/alertmanager.yml" ... not a directory` —
-because `infra/` has still never been copied into this app's directory on i3
-(steps 1–3 below). The resource now reports `Degraded`.
+because `infra/` had still never been copied into this app's directory on i3
+(steps 1–3 below). The resource then reported `Degraded`.
+
+That blocker is gone. A second manual deployment (`rf9khpe366fd6yxkcxiamszg`, the
+same commit, 00:02:32–00:42:46 on 23 Nov, `40m 23s`) ended **Failed** with **no
+mount error in any of its 109 log lines**: every container in the set —
+`alertmanager`, `migrate`, `backup` and `dns-probe` among them — was created and
+started, so `infra/` is in place on i3 now. It stopped one step later, on
+`dependency failed to start: container meilisearch-…-20261123T050243 is
+unhealthy`, and that container's own log gives the reason: `The master key must
+be at least 16 bytes in a production environment. The provided key is only 9
+bytes.` `MEILISEARCH_API_KEY` had no value in Coolify, so the compose default
+`${MEILISEARCH_API_KEY:-change-me}` — nine bytes — reached `MEILI_MASTER_KEY`,
+and Meilisearch refuses to serve in `MEILI_ENV=production` with a key that
+short: it restarted, its healthcheck never passed, and `up -d` aborted on the
+dependency. The row now holds `PLACEHOLDER-NOT-A-REAL-MEILI-KEY` (32 bytes), so
+the container starts; the real Vault key still has to replace it. The
+`smtp_password` the api mounts is likewise a 36-byte placeholder, not the real
+SMTP submission password.
+
+A third manual deployment (`l5awslraqhukesufwb5ap3r6`, started 01:59:55 on
+23 Nov) ran with that row in place. Its log reached `Pulling & building required
+images.` at 02:00:19 and the images were still building when the Coolify session
+watching it was lost around 02:50, so this file does not record its final status.
+From outside, `https://app.signara.innotel.us/login` answers `200` with the
+Next.js web app (`/_next/static` assets, `404` for an unknown path) through the
+`.71` openresty edge — but the failed 00:42 run had already created and started
+the web container, so that alone does not prove this run finished.
 
 After that failed deployment the environment-variable table still reads **`1–10
 of 180`**, the same 180 rows it had before the deploy: read while it ran and again
@@ -238,8 +264,9 @@ the deleted application, not the resource recreated on 22 Nov, whose table holds
    plus the SMTP password); Coolify rewrites them under
    `/data/coolify/applications/<uuid>/` but does not copy the repository's
    `infra/` tree there, so Docker creates an empty *directory* for each file
-   source and `up -d` dies on `not a directory`. The i3 deployment ends on it, and it is
-   fixable on the host — see **Why the i3 deployment failed** below. `postgres — Error dependency postgres failed to start` in the
+   source and `up -d` dies on `not a directory`. It ended every i3 deployment before 23 Nov;
+   `infra/` is now in place on the host, so the mounts no longer fail — see **Why
+   the i3 deployment failed** below. `postgres — Error dependency postgres failed to start` in the
    same log is that abort cascading, not a database problem.
 5. **The environment rows are doubled, and the second copy is blank where it was
    read.** 346 rows for 162 names: rows 175–346 repeat rows 1–172, and the 26
@@ -285,15 +312,21 @@ the other seven, so repairing `alertmanager.yml` alone would just move the error
 to the next file.
 
 These run on **`192.168.1.53`** (the i3 deploy host), as root. None of them has
-been run from this workstation — there is no shell on the i3 box from here — so
-each *proves* line describes what success looks like, not captured output.
+been run, so each *proves* line describes what success looks like, not captured
+output. SSH to i3 from this workstation is refused, so the root path in is
+Coolify's own server terminal — **Servers → i3-local → Terminal**
+(`/server/adc5d2b4-b58a-4334-a8e7-30504d915622/terminal`) — which opens
+`root@i3:~#` through the SSH key Coolify already holds for i3.
 
 `deploy/signara/fix-infra-mounts.sh` is the one-shot, idempotent version of steps
 1–3: copy it to the host, run it as root, and check its three `OK n/3` lines the
 way the *Proves it* lines below say to. It refuses to copy a `--source` tree that
 is not the pinned `6555303` commit unless you also pass `--allow-other-commit`,
-and its `OK 1/3` line names the commit it actually copied. The manual commands
-stay as the fallback for when the script cannot run; change both together.
+and its `OK 1/3` line names the commit it actually copied. It also refuses an
+application directory outside `/data/coolify/applications/`: retarget it with
+`SIGNARA_APP_DIR`, and add `SIGNARA_ALLOW_OTHER_APP_DIR=1` only for a path that
+really is that app's. The manual commands stay as the fallback for when the
+script cannot run; change both together.
 
 ### 0. Make the environment rows unique and complete
 
