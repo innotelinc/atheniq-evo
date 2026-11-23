@@ -208,6 +208,17 @@ Next.js web app (`/_next/static` assets, `404` for an unknown path) through the
 `.71` openresty edge — but the failed 00:42 run had already created and started
 the web container, so that alone does not prove this run finished.
 
+Reading it once the session came back failed on access, not on the deployment.
+Coolify sits behind Authentik forward auth, and on 23 Nov every request to
+`deploy.innotel.us` — the deployment page and the terminal WebSocket alike — is
+sent to
+`auth.innotel.us/if/flow/default-provider-authorization-implicit-consent/` and
+then returns to the Authentik user portal without a proxy session, with that
+portal signed in; `/outpost.goauthentik.io/start?rd=…` behaves the same. Until
+that SSO is repaired, the deployment log, the container state and the
+server-terminal route below are all closed, so this file records neither this
+run's final status nor a Meilisearch health check after it.
+
 After that failed deployment the environment-variable table still reads **`1–10
 of 180`**, the same 180 rows it had before the deploy: read while it ran and again
 once it ended `Failed`. The doubling to 346 did not come back on the recreated
@@ -316,7 +327,8 @@ been run, so each *proves* line describes what success looks like, not captured
 output. SSH to i3 from this workstation is refused, so the root path in is
 Coolify's own server terminal — **Servers → i3-local → Terminal**
 (`/server/adc5d2b4-b58a-4334-a8e7-30504d915622/terminal`) — which opens
-`root@i3:~#` through the SSH key Coolify already holds for i3.
+`root@i3:~#` through the SSH key Coolify already holds for i3, when its forward
+auth is working (see the forward-auth failure recorded above).
 
 `deploy/signara/fix-infra-mounts.sh` is the one-shot, idempotent version of steps
 1–3: copy it to the host, run it as root, and check its three `OK n/3` lines the
