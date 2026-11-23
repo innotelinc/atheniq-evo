@@ -202,22 +202,33 @@ SMTP submission password.
 A third manual deployment (`l5awslraqhukesufwb5ap3r6`, started 01:59:55 on
 23 Nov) ran with that row in place. Its log reached `Pulling & building required
 images.` at 02:00:19 and the images were still building when the Coolify session
-watching it was lost around 02:50, so this file does not record its final status.
-From outside, `https://app.signara.innotel.us/login` answers `200` with the
-Next.js web app (`/_next/static` assets, `404` for an unknown path) through the
-`.71` openresty edge — but the failed 00:42 run had already created and started
-the web container, so that alone does not prove this run finished.
+watching it was lost around 02:50. What it produced is up regardless:
+`https://api.signara.innotel.us/ready` answers
+`{"status":"ok","info":{"postgres":{"status":"up"}}}`, `/health` names
+`signara-api`, and the console signed in at `app.signara.innotel.us` calls
+`GET https://api.signara.innotel.us/api/v1/auth/me` and
+`/api/v1/documents?limit=8`, getting `200` after `204` preflights. The api starts
+only when `migrate` has completed and `postgres`, `redis` and `meilisearch` are
+healthy, so this run cleared the Meilisearch blocker above. Coolify's own verdict
+on the run is still unread — see the forward-auth note below.
 
-Reading it once the session came back failed on access, not on the deployment.
-Coolify sits behind Authentik forward auth, and on 23 Nov every request to
-`deploy.innotel.us` — the deployment page and the terminal WebSocket alike — is
-sent to
+One path is easy to mistake for a broken route: `https://api.signara.innotel.us/`
+and `/api/health` return the API's own
+`{"statusCode":404,"error":"NOT_FOUND","message":["Cannot GET /"]}` in JSON, not
+the edge's HTML 404. The paths that answer are `/ready`, `/health` and
+`/api/v1/…`; `api.signara.innotel.us` is also the host the OIDC callback
+(`/api/v1/auth/callback`) and the compiled web bundle both point at.
+
+Reading the deployment itself once the session came back failed on access, not on
+the stack. Coolify sits behind Authentik forward auth, and on 23 Nov every request
+to `deploy.innotel.us` — the deployment page and the terminal WebSocket alike —
+is sent to
 `auth.innotel.us/if/flow/default-provider-authorization-implicit-consent/` and
 then returns to the Authentik user portal without a proxy session, with that
 portal signed in; `/outpost.goauthentik.io/start?rd=…` behaves the same. Until
 that SSO is repaired, the deployment log, the container state and the
-server-terminal route below are all closed, so this file records neither this
-run's final status nor a Meilisearch health check after it.
+server-terminal route below are all closed, so this file records the stack's
+behaviour from outside rather than Coolify's status for the run.
 
 After that failed deployment the environment-variable table still reads **`1–10
 of 180`**, the same 180 rows it had before the deploy: read while it ran and again
@@ -262,14 +273,21 @@ the deleted application, not the resource recreated on 22 Nov, whose table holds
    MinIO in this stack is profile-gated on purpose (its images are no longer
    pullable). Documents cannot be written until ONYX is back or a bucket is
    pointed at via `SIGNARA_S3_ENDPOINT` / `SIGNARA_S3_*`.
-2. **No OIDC application.** Nothing in the estate yet provides
-   `application/o/signara/` at `auth.cerulean.innotel.us` or the `signara-admins`
-   group. Without it nobody can sign in, and an API key cannot be minted, so the
-   console stays on `queued_local`.
-3. **No public route.** `api.` and `app.signara.innotel.us` both resolve to
-   `73.68.203.71` and terminate on the `.71` edge, which has no `api.` vhost.
-   With the template's bind addresses the stack binds web `:3000` and api
-   `:8000` on the i3 host's loopback, reachable on the LAN only.
+2. **The `signara-admins` group, and the API key that needs it.** The OIDC
+   application now exists: `application/o/signara/.well-known/openid-configuration`
+   at `auth.cerulean.innotel.us` answers `200` with issuer
+   `…/application/o/signara/`, the web bundle signs in as client `signara-web`
+   with callback `https://api.signara.innotel.us/api/v1/auth/callback`, and on
+   23 Nov a user reached the console's dashboard through it. Not verified here:
+   the `signara-admins` grant and the service API key minted from it, so
+   `SIGNARA_API_KEY` is still unwritten in `deploy/signara/estate.env`.
+3. **Both public routes exist.** `app.` and `api.signara.innotel.us` resolve to
+   `73.68.203.71` and both answer through the edge: the web app renders, and the
+   api answers `/ready`, `/health` and `/api/v1/…` (401 without a bearer token)
+   with CORS allowing `https://app.signara.innotel.us`. Do not "fix" this by
+   pointing an edge host at `192.168.1.53:8000`: the compose default and
+   `estate.env` publish the api on the i3 host's **loopback**
+   (`API_BIND_ADDRESS=127.0.0.1`), so such a host would answer 502.
 4. **The compose file's file bind mounts cannot resolve under Coolify.**
    `docker-compose.prod.yml` mounts eight files by relative path (seven configs
    plus the SMTP password); Coolify rewrites them under
@@ -288,10 +306,9 @@ the deleted application, not the resource recreated on 22 Nov, whose table holds
    and a failed deployment of the same commit left that count at 180. Fix it
    as **step 0** below.
 
-Fix order: dedupe the environment rows (step 0) → repair the bind
-mounts (steps 1–3) → redeploy → bring ONYX back → create the Authentik
-application and group → add an `api.signara.innotel.us` vhost pointing at
-`192.168.1.53:8000` → create the API key and set `SIGNARA_API_URL`,
+Fix order: dedupe the environment rows (step 0) → repair the bind mounts
+(steps 1–3) → redeploy → bring ONYX back → add the user to `signara-admins` →
+create the API key and set `SIGNARA_API_URL` (already `https://api.signara.innotel.us`),
 `SIGNARA_API_KEY` and `CREDENTIAL_VERIFY_URL`.
 
 ## Why the i3 deployment failed (and the commands that fix it)
