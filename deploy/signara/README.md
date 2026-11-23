@@ -40,6 +40,14 @@ The estate's values live in Cerulean Vault at `cerulean/signara` (KV v2):
 `MEILISEARCH_API_KEY`, `OIDC_CLIENT_SECRET`, `JWT_ACCESS_SECRET`,
 `JWT_REFRESH_SECRET`, `CRYPTO_MASTER_KEY`.
 
+`SMTP_PASSWORD` is deliberately absent from that list, and it is not in Vault at
+all. The only Vault access available here is the UI at
+`https://secrets.cerulean.innotel.us` (the Authentik **Vault** app), whose OIDC
+login mints a token carrying the read-only `cerulean-read` policy, so this path
+cannot be written with it. The SMTP credential lives only in the mounted file —
+see step 3. (`192.168.1.71:8200` itself answers nothing, from i3 or from the
+workstation; the UI through the edge is the way in.)
+
 Signara does **not** resolve `vault://` references at runtime — upstream's
 `docs/stack.md` is explicit that a reference reaches the container as a literal
 string. `scripts/vault-migrate.py` pushes plaintext *into* Vault; nothing pulls
@@ -196,8 +204,9 @@ and Meilisearch refuses to serve in `MEILI_ENV=production` with a key that
 short: it restarted, its healthcheck never passed, and `up -d` aborted on the
 dependency. The row now holds `PLACEHOLDER-NOT-A-REAL-MEILI-KEY` (32 bytes), so
 the container starts; the real Vault key still has to replace it. The
-`smtp_password` the api mounts is likewise a 36-byte placeholder, not the real
-SMTP submission password.
+`smtp_password` that api and alertmanager mount was a 36-byte placeholder until
+23 Nov; it is now a real 40-byte Stalwart app password, installed the way step 3
+describes.
 
 A third manual deployment (`l5awslraqhukesufwb5ap3r6`, started 01:59:55 on
 23 Nov) ran with that row in place. Its log reached `Pulling & building required
@@ -433,12 +442,19 @@ a directory that has to be a file — that list is the bug, stated in one line.
 
 ### 2. Put the real files there
 
+`infra/secrets/` may already hold installed files (step 3 writes
+`smtp_password` there), so copy them aside first — the `rm -rf` below takes them
+with it:
+
 ```bash
+mkdir -p /root/signara-secrets-backup
+cp -a "$APP/infra/secrets/." /root/signara-secrets-backup/ 2>/dev/null || true
 rm -rf "$APP/infra"      # only the empty directories Docker created
 rm -rf /tmp/signara-src
 git clone https://github.com/innotelinc/signara.git /tmp/signara-src   # add a token if the repo is private
 git -C /tmp/signara-src checkout 6555303fce6932bb2118905321b933321a7b369c
 cp -a /tmp/signara-src/infra "$APP/infra"
+cp -a /root/signara-secrets-backup/. "$APP/infra/secrets/" 2>/dev/null || true
 find "$APP/infra" -type d \( -name '*.yml' -o -name '*.sh' -o -name '*.py' -o -name '*.tmpl' \) -print
 ls -l "$APP/infra/monitoring/alertmanager/"
 ```
@@ -448,23 +464,125 @@ ls -l "$APP/infra/monitoring/alertmanager/"
 not undo this — Coolify rewrites the compose file, not the tree beside it — so it
 holds until the relative mounts are removed from the compose file upstream.
 
-### 3. Write the SMTP password file by hand
+### 3. Install the SMTP submission credential
 
 `./infra/secrets/smtp_password` is mounted twice (alertmanager and the api) and is
 not committed: at this revision `infra/secrets/` holds only `README.md`. The
-clone therefore leaves the path missing, and a missing bind source becomes a
-directory exactly like the others, so this step is not optional. Write it
-without leaving it in shell history:
+clone leaves the path missing, and a missing bind source becomes a directory
+exactly like the others, so this step is not optional.
+
+The value is a Stalwart **app password** on `registrar@atheniq.institute` — the
+mailbox the estate describes as the registrar console's alerts, digests and
+verification mail — with the description `Signara alertmanager SMTP`. A plain
+mailbox password is not an option: every domain on `mail.innotel.us` resolves to
+the Authentik OIDC directory, and Stalwart answers `Cannot set credentials for
+accounts in an external directory` to any attempt to create a local-password
+account there. App passwords are the exception; the server generates the secret
+and returns it exactly once.
+
+Stalwart's management UI (`admin.mail.innotel.us`) is behind the same broken
+forward auth as Coolify — that host has no Authentik application, so the outpost
+loops to the user library. Its JMAP API is reachable without SSO, and
+`x:AppPassword/set` on `/jmap/` works with the estate token:
+
+```bash
+# on i3, estate token in a 0600 file; account da = registrar@atheniq.institute
+jq -n '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],methodCalls:[["x:AppPassword/set",
+  {accountId:"da",create:{new1:{description:"Signara alertmanager SMTP",
+  permissions:{"@type":"Inherit"},allowedIps:{}}}},"c1"]]}' \
+| curl -sS -H "Authorization: Bearer $(cat /root/.st-token.tmp)" \
+    -H 'Content-Type: application/json' --data-binary @- https://mail.innotel.us/jmap/ \
+| jq -r '.methodResponses[0][1].created.new1.secret'
+```
+
+Write that secret into a root-only file rather than through shell history, prove
+it authenticates, then install it:
+
+```bash
+bash /root/provision-signara-smtp.sh test-smtp registrar@atheniq.institute   # 235 = works
+bash /root/provision-signara-smtp.sh install-mount                          # --replace-password --smtp-password-file
+```
+
+The wrapper (`apppassword`, `test-smtp`, `install-mount`) keeps the secret in
+`/root/.signara-smtp.tmp` at 0600 and prints only its length and prefix;
+`install-mount` calls `--replace-password` with `--smtp-password-file`, so no
+prompt is needed and the old value is copied to `/root/smtp_password.bak` (0600)
+before the mount is rewritten at 0444.
+
+Alertmanager also needs `SMTP_HOST=mail.innotel.us`,
+`SMTP_USER=registrar@atheniq.institute` and
+`SMTP_FROM=registrar@atheniq.institute` in the app's Coolify environment. The
+port defaults to 587, and the password arrives through the mounted file, not
+`SMTP_PASS`. As of 23 Nov all three are **empty** in the running container
+(`docker inspect` shows `SMTP_PORT=587`, `SMTP_HELLO=innotel.us`, and blank
+host/user/from), so alertmanager still has nothing to authenticate as until those
+rows are filled in and the app redeployed.
+
+**The credential is not in Vault.** `cerulean/signara` still has no
+`SMTP_PASSWORD` key. The OIDC token answers `sys/capabilities-self` with
+`["list","read"]` for `cerulean/data/signara` and `deny` for
+`auth/token/create`, and a write to that path is refused. The keys that look like
+candidates are not Vault tokens at all: `cerulean/blueprint`'s
+`CERULEAN_SERVICE_KEY`, `cerulean/service-keys/atheniq-edge`'s `token` and
+`cerulean/olympus/authentik`'s `AUTHENTIK_TOKEN` each get `permission denied` /
+`invalid token` from `sys/capabilities-self`. There is no Vault token on i3
+either (nothing under `/root` or `/etc`, no `VAULT_*` row in any app `.env`, no
+`/etc/vault.d`). Recording it therefore needs either a write half for the OIDC
+role on `cerulean/data/signara`, or a token with `create`/`update` there — then:
+
+```bash
+vault kv patch cerulean/signara SMTP_PASSWORD=@/root/.signara-smtp.tmp
+```
+
+`kv patch`, not `kv put`: `put` replaces the version wholesale and would drop
+the twelve keys already stored.
+
+**Dry run before deploying.** The entrypoint's rendering can be exercised without
+Coolify or a container — cut the script at its final `exec`, point the copy at
+the host paths, and give it the same variables the container will get:
+
+```bash
+APP=/data/coolify/applications/4vzo0yw5ipz3m8cx9fuptr4d
+mkdir -p /root/am-dryrun
+sed -n "1,/^exec \/bin\/alertmanager/p" "$APP/infra/monitoring/alertmanager/entrypoint.sh" | sed "\$d" > /root/am-render.sh
+sed -e "s#^template=.*#template=$APP/infra/monitoring/alertmanager/alertmanager.yml#" \
+    -e "s#^rendered=.*#rendered=/root/am-dryrun/alertmanager.rendered.yml#" \
+    /root/am-render.sh > /root/am-render-host.sh
+SMTP_HOST=mail.innotel.us SMTP_PORT=587 \
+SMTP_USER=registrar@atheniq.institute SMTP_FROM=registrar@atheniq.institute \
+ALERT_EMAIL_TO=registrar@atheniq.institute SMTP_HELLO=signara.innotel.us \
+SMTP_TLS_SERVERNAME=mail.innotel.us sh /root/am-render-host.sh
+```
+
+Run on 23 Nov it exited 0 and rendered:
+
+```
+25:  smtp_smarthost: 'mail.innotel.us:587'
+26:  smtp_from: 'registrar@atheniq.institute'
+27:  smtp_auth_username: 'registrar@atheniq.institute'
+28:  smtp_auth_password_file: '/run/secrets/smtp_password'
+29:  smtp_require_tls: true
+```
+
+No `${...}` remained, and the result parses as YAML with receivers `email`,
+`probe`, `silent` and route receiver `email`. What that does **not** prove is that
+Alertmanager accepts it: `amtool check-config` could not be run. `docker run`
+hangs on image resolution on i3 — dockerd's journal is full of
+`failed to resolve container image … context canceled` — and the only running
+Alertmanager there belongs to another app with a read-only rootfs, so the file
+cannot be placed where its `amtool` would see it.
+
+Setting `SMTP_TLS_SERVERNAME=mail.innotel.us` also silences the entrypoint's
+warning about verification: left unset it warns that the dialled address is what
+the relay's certificate gets checked against.
+
+A password from elsewhere still works by hand:
 
 ```bash
 read -rs SMTP && printf '%s' "$SMTP" > "$APP/infra/secrets/smtp_password" && unset SMTP
 chmod 0444 "$APP/infra/secrets/smtp_password"
 ls -l "$APP/infra/secrets/smtp_password"; wc -c < "$APP/infra/secrets/smtp_password"
 ```
-
-A value that is already written is not touched by the script unless you ask:
-`./fix-infra-mounts.sh --replace-password` prompts hidden as before, keeps the
-old value at `/root/smtp_password.bak`, and prints `replaced …` before `OK 3/3`.
 
 *Proves it:* mode `-r--r--r--` and a non-zero byte count. The mode is not this
 runbook's idea: the compose file's comment on that mount says both consumers are
