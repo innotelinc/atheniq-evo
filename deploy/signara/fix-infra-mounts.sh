@@ -5,7 +5,8 @@
 #
 # Run as root on the i3 deploy host (192.168.1.53). Idempotent: a second run
 # changes nothing, prints the same three OK lines, and leaves an existing
-# password file (and its value) alone.
+# password file (and its value) alone unless --replace-password asks for a new
+# one.
 #
 #   ./fix-infra-mounts.sh                                  # fetch the pinned commit
 #   ./fix-infra-mounts.sh --source /root/signara-src       # use a checkout you have
@@ -13,6 +14,8 @@
 #                                                          # the pinned commit, and say so
 #   ./fix-infra-mounts.sh --smtp-password-file /root/smtp  # write the password from a file
 #   vault kv get -field=SMTP_PASSWORD cerulean/signara | ./fix-infra-mounts.sh
+#   ./fix-infra-mounts.sh --replace-password               # overwrite an existing password
+#                                                          # file, keeping a backup of it
 #
 # The password is never echoed or put in shell history: only its byte count is
 # reported.
@@ -45,11 +48,13 @@ usage() {
 
 SOURCE=""
 PW_SOURCE=""
+REPLACE_PW="${SIGNARA_REPLACE_PASSWORD:-0}"
 ALLOW_OTHER="${SIGNARA_ALLOW_OTHER_COMMIT:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --source) SOURCE="${2:-}"; shift 2 ;;
     --allow-other-commit) ALLOW_OTHER=1; shift ;;
+    --replace-password) REPLACE_PW=1; shift ;;
     --smtp-password-file) PW_SOURCE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
@@ -170,20 +175,34 @@ write_pw() {
   mv -f -- "$tmp" "$PW_FILE"
 }
 
-if [ -f "$PW_FILE" ] && [ -s "$PW_FILE" ]; then
-  printf 'leaving %s in place: already written\n' "$PW_FILE"
+PW_BACKUP=""
+if [ -f "$PW_FILE" ] && [ -s "$PW_FILE" ] && [ "$REPLACE_PW" != "1" ]; then
+  printf 'leaving %s in place: already written (--replace-password changes it)\n' "$PW_FILE"
   chmod 0444 -- "$PW_FILE"
-elif [ -n "$PW_SOURCE" ]; then
-  [ -r "$PW_SOURCE" ] || die "cannot read --smtp-password-file $PW_SOURCE"
-  write_pw "$(cat -- "$PW_SOURCE")"
-elif [ -t 0 ]; then
-  printf 'SMTP submission password (input hidden): ' >&2
-  read -rs PW
-  printf '\n' >&2
-  write_pw "${PW:-}"
-  unset PW
 else
-  write_pw "$(cat)"
+  # A replacement must never lose the old value: keep a root-only copy first, so
+  # a failed or empty write can be undone with cp -p from it.
+  if [ "$REPLACE_PW" = "1" ] && [ -f "$PW_FILE" ] && [ -s "$PW_FILE" ]; then
+    PW_BACKUP="${SIGNARA_PW_BACKUP:-/root/smtp_password.bak}"
+    cp -p -- "$PW_FILE" "$PW_BACKUP"
+    chmod 0600 -- "$PW_BACKUP"
+    printf 'backed up the previous %s to %s (mode 0600)\n' "$PW_FILE" "$PW_BACKUP"
+  fi
+  if [ -n "$PW_SOURCE" ]; then
+    [ -r "$PW_SOURCE" ] || die "cannot read --smtp-password-file $PW_SOURCE"
+    write_pw "$(cat -- "$PW_SOURCE")"
+  elif [ -t 0 ]; then
+    printf 'SMTP submission password (input hidden): ' >&2
+    read -rs PW
+    printf '\n' >&2
+    write_pw "${PW:-}"
+    unset PW
+  else
+    write_pw "$(cat)"
+  fi
+  if [ -n "$PW_BACKUP" ]; then
+    printf 'replaced %s with the new value\n' "$PW_FILE"
+  fi
 fi
 
 mode="$(stat -c '%a' -- "$PW_FILE")"

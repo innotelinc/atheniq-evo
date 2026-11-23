@@ -356,7 +356,12 @@ is not the pinned `6555303` commit unless you also pass `--allow-other-commit`,
 and its `OK 1/3` line names the commit it actually copied. It also refuses an
 application directory outside `/data/coolify/applications/`: retarget it with
 `SIGNARA_APP_DIR`, and add `SIGNARA_ALLOW_OTHER_APP_DIR=1` only for a path that
-really is that app's. The manual commands stay as the fallback for when the
+really is that app's. An existing password file is left alone, so a 36-byte
+placeholder stays until it is replaced: with `--replace-password` the script
+copies the old value to `/root/smtp_password.bak` (mode 0600; override the path
+with `SIGNARA_PW_BACKUP`), prints `backed up …` and `replaced …` ahead of the
+same `OK 3/3` line, and still refuses an empty password, so a failed run leaves
+the old file in place. The manual commands stay as the fallback for when the
 script cannot run; change both together.
 
 ### 0. Make the environment rows unique and complete
@@ -456,6 +461,10 @@ read -rs SMTP && printf '%s' "$SMTP" > "$APP/infra/secrets/smtp_password" && uns
 chmod 0444 "$APP/infra/secrets/smtp_password"
 ls -l "$APP/infra/secrets/smtp_password"; wc -c < "$APP/infra/secrets/smtp_password"
 ```
+
+A value that is already written is not touched by the script unless you ask:
+`./fix-infra-mounts.sh --replace-password` prompts hidden as before, keeps the
+old value at `/root/smtp_password.bak`, and prints `replaced …` before `OK 3/3`.
 
 *Proves it:* mode `-r--r--r--` and a non-zero byte count. The mode is not this
 runbook's idea: the compose file's comment on that mount says both consumers are
