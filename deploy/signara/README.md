@@ -341,8 +341,10 @@ to the next file.
 
 These run on **`192.168.1.53`** (the i3 deploy host), as root. None of them has
 been run, so each *proves* line describes what success looks like, not captured
-output. SSH to i3 from this workstation is refused, so the root path in is
-Coolify's own server terminal — **Servers → i3-local → Terminal**
+output. SSH to i3 is reachable from this workstation — TCP 22 and 8080 answer on
+`192.168.1.53` — but it authenticates by key and this workstation holds no key
+for i3 (`Permission denied (publickey,password,keyboard-interactive)`), so the
+root path in is Coolify's own server terminal — **Servers → i3-local → Terminal**
 (`/server/adc5d2b4-b58a-4334-a8e7-30504d915622/terminal`) — which opens
 `root@i3:~#` through the SSH key Coolify already holds for i3, when its forward
 auth is working (see the forward-auth failure recorded above).
