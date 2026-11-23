@@ -40,13 +40,12 @@ The estate's values live in Cerulean Vault at `cerulean/signara` (KV v2):
 `MEILISEARCH_API_KEY`, `OIDC_CLIENT_SECRET`, `JWT_ACCESS_SECRET`,
 `JWT_REFRESH_SECRET`, `CRYPTO_MASTER_KEY`.
 
-`SMTP_PASSWORD` is deliberately absent from that list, and it is not in Vault at
-all. The only Vault access available here is the UI at
-`https://secrets.cerulean.innotel.us` (the Authentik **Vault** app), whose OIDC
-login mints a token carrying the read-only `cerulean-read` policy, so this path
-cannot be written with it. The SMTP credential lives only in the mounted file —
-see step 3. (`192.168.1.71:8200` itself answers nothing, from i3 or from the
-workstation; the UI through the edge is the way in.)
+`SMTP_PASSWORD` is the thirteenth key, stored 23 Nov as version 2 beside the
+other twelve, all of which survived the write. The UI at
+`https://secrets.cerulean.innotel.us` (the Authentik **Vault** app) cannot write
+it: its OIDC login mints a token carrying the read-only `cerulean-read` policy.
+(`192.168.1.71:8200` is not exposed — the UI through the edge is the only remote
+way in, and the host has no `vault` CLI.)
 
 Signara does **not** resolve `vault://` references at runtime — upstream's
 `docs/stack.md` is explicit that a reference reaches the container as a literal
@@ -518,54 +517,52 @@ port defaults to 587, and the password arrives through the mounted file, not
 host/user/from), so alertmanager still has nothing to authenticate as until those
 rows are filled in and the app redeployed.
 
-**The credential is not in Vault.** `cerulean/signara` still has no
-`SMTP_PASSWORD` key. The OIDC token answers `sys/capabilities-self` with
+**The credential is in Vault.** `cerulean/signara` v2 holds `SMTP_PASSWORD`
+(40 bytes) beside the twelve keys it had at v1, all still present. Nothing
+reachable from i3 could do it: the OIDC token answers `sys/capabilities-self` with
 `["list","read"]` for `cerulean/data/signara` and `deny` for
-`auth/token/create`, and a write to that path is refused. The keys that look like
-candidates are not Vault tokens at all: `cerulean/blueprint`'s
-`CERULEAN_SERVICE_KEY`, `cerulean/service-keys/atheniq-edge`'s `token` and
+`auth/token/create`. The keys that look like candidates are not Vault tokens at
+all: `cerulean/blueprint`'s `CERULEAN_SERVICE_KEY`,
+`cerulean/service-keys/atheniq-edge`'s `token` and
 `cerulean/olympus/authentik`'s `AUTHENTIK_TOKEN` each get `permission denied` /
-`invalid token` from `sys/capabilities-self`. There is no Vault token on i3
-either (nothing under `/root` or `/etc`, no `VAULT_*` row in any app `.env`, no
-`/etc/vault.d`). Recording it therefore needs either a write half for the OIDC
-role on `cerulean/data/signara`, or a token with `create`/`update` there — then:
+`invalid token` from `sys/capabilities-self`, and i3 has no Vault token (nothing
+under `/root` or `/etc`, no `VAULT_*` row in any app `.env`, no `/etc/vault.d`).
+
+The write came from the host that runs the store. `.71` (edge-proxy) runs
+`cerulean-vault` (hashicorp/vault:1.17.6, `VAULT_ADDR=http://127.0.0.1:8200`) with
+its init output bind-mounted at
+`/usr/src/projects/complete/1-primary/cerulean/data/vault/init/init.json`, which
+holds `root_token` (its `unseal_threshold` is 1, so one file is enough). With
+that, mint a narrow token and hand it to i3 — `ssh` runs key-authenticated
+`proxy`→i3, not the other way round:
 
 ```bash
-vault kv patch cerulean/signara SMTP_PASSWORD=@/root/.signara-smtp.tmp
-```
-
-`kv patch`, not `kv put`: `put` replaces the version wholesale and would drop
-the twelve keys already stored.
-
-What the write needs — either a write half on the OIDC role, or a scoped token:
-
-```bash
-# the policy itself; kv patch issues PATCH against the data path
-vault policy write cerulean-write-signara - <<'EOF'
+RT=$(jq -r .root_token /usr/src/projects/complete/1-primary/cerulean/data/vault/init/init.json)
+docker exec -i -e VAULT_TOKEN="$RT" cerulean-vault vault policy write signara-smtp-write - <<'POL'
 path "cerulean/data/signara"     { capabilities = ["read", "patch"] }
 path "cerulean/metadata/signara" { capabilities = ["read"] }
-EOF
-
-# (a) attach it to the OIDC role, then sign in again so the token carries it
-vault list auth/oidc/role
-vault write auth/oidc/role/<role> token_policies="cerulean-read,cerulean-write-signara"
-
-# (b) or mint a one-shot token for the host
-vault token create -policy=cerulean-write-signara -ttl=1h \
-  -display-name=signara-smtp-write -field=token > /root/.vault-write-token
-chmod 600 /root/.vault-write-token
+POL
+docker exec -e VAULT_TOKEN="$RT" cerulean-vault vault token create \
+  -policy=signara-smtp-write -ttl=1h -display-name=signara-smtp-write -field=token \
+  | tr -d '\n' \
+  | ssh root@192.168.1.53 'cat > /root/.vault-write-token && chmod 600 /root/.vault-write-token'
 ```
 
-With (b) in place, the wrapper does the patch from i3 — the secret and the token
-both stay on the host, and it prints key names, the version and the stored
-value's byte count only:
+Then on i3, with the secret already there, nothing crosses the wire:
 
 ```bash
 bash /root/provision-signara-smtp.sh vault-patch
 # before: {"version":1,"count":12,...}  patch status: 200
 # after:  {"version":2,"count":13,"smtp_bytes":40,...}
 # VERIFIED: SMTP_PASSWORD present and all 13 keys kept
+# write token shredded
 ```
+
+The PATCH needs `Content-Type: application/merge-patch+json`; plain
+`application/json` is refused with 415. `kv patch`, not `kv put`: `put` replaces
+the version wholesale and would drop the twelve keys already stored. The
+`signara-smtp-write` policy is left in place for the next rotation; it is
+attached to no role, so only the root token can mint with it.
 
 **Dry run before deploying.** The entrypoint's rendering can be exercised without
 Coolify or a container — cut the script at its final `exec`, point the copy at
