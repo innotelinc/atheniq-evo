@@ -537,6 +537,36 @@ vault kv patch cerulean/signara SMTP_PASSWORD=@/root/.signara-smtp.tmp
 `kv patch`, not `kv put`: `put` replaces the version wholesale and would drop
 the twelve keys already stored.
 
+What the write needs — either a write half on the OIDC role, or a scoped token:
+
+```bash
+# the policy itself; kv patch issues PATCH against the data path
+vault policy write cerulean-write-signara - <<'EOF'
+path "cerulean/data/signara"     { capabilities = ["read", "patch"] }
+path "cerulean/metadata/signara" { capabilities = ["read"] }
+EOF
+
+# (a) attach it to the OIDC role, then sign in again so the token carries it
+vault list auth/oidc/role
+vault write auth/oidc/role/<role> token_policies="cerulean-read,cerulean-write-signara"
+
+# (b) or mint a one-shot token for the host
+vault token create -policy=cerulean-write-signara -ttl=1h \
+  -display-name=signara-smtp-write -field=token > /root/.vault-write-token
+chmod 600 /root/.vault-write-token
+```
+
+With (b) in place, the wrapper does the patch from i3 — the secret and the token
+both stay on the host, and it prints key names, the version and the stored
+value's byte count only:
+
+```bash
+bash /root/provision-signara-smtp.sh vault-patch
+# before: {"version":1,"count":12,...}  patch status: 200
+# after:  {"version":2,"count":13,"smtp_bytes":40,...}
+# VERIFIED: SMTP_PASSWORD present and all 13 keys kept
+```
+
 **Dry run before deploying.** The entrypoint's rendering can be exercised without
 Coolify or a container — cut the script at its final `exec`, point the copy at
 the host paths, and give it the same variables the container will get:
@@ -564,13 +594,24 @@ Run on 23 Nov it exited 0 and rendered:
 29:  smtp_require_tls: true
 ```
 
-No `${...}` remained, and the result parses as YAML with receivers `email`,
-`probe`, `silent` and route receiver `email`. What that does **not** prove is that
-Alertmanager accepts it: `amtool check-config` could not be run. `docker run`
-hangs on image resolution on i3 — dockerd's journal is full of
-`failed to resolve container image … context canceled` — and the only running
-Alertmanager there belongs to another app with a read-only rootfs, so the file
-cannot be placed where its `amtool` would see it.
+No `${...}` remained, and `amtool` from the same image accepts the result:
+
+```
+$ docker run --rm --user 0:0 -v /root/am-dryrun:/cfg:ro \
+    --entrypoint /bin/sh prom/alertmanager:v0.27.0 \
+    -c "amtool check-config /cfg/alertmanager.rendered.yml"
+Checking '/cfg/alertmanager.rendered.yml'  SUCCESS
+Found:
+ - global config
+ - route
+ - 1 inhibit rules
+ - 3 receivers
+ - 1 templates
+  SUCCESS
+```
+
+The `--user 0:0` is load-bearing: the image runs as `nobody`, which cannot stat
+the 0600 rendered file and answers `permission denied` instead of reading it.
 
 Setting `SMTP_TLS_SERVERNAME=mail.innotel.us` also silences the entrypoint's
 warning about verification: left unset it warns that the dialled address is what
