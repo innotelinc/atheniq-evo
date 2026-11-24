@@ -206,11 +206,15 @@ Run: `npm run check`.
   and the `atheniq_classroom` cookie on `.atheniq.institute`, and Chromium
   refuses it when framed by a host the policy does not name. That run mapped the
   public names to the local stack, so it proves the image and the frame, not the
-  edge in front of them. Compose carries the same value as a build argument by
-  default (`docker compose config` shows `ALLOWED_FRAME_ANCESTORS:
-  https://registrar.atheniq.institute` with the variable unset), though that build
-  did not reach an image on this workstation: the Docker engine died during
-  `next build` on a 3.9 GB VM, which `docs/cutover.md` records.
+  edge in front of them. That image is now built in CI, not by hand: the
+  `openmaic image` workflow fetches OpenMAIC at the pinned commit, builds it with
+  the registrar origin (the value Compose passes by default — `docker compose
+  config` shows `ALLOWED_FRAME_ANCESTORS: https://registrar.atheniq.institute`
+  with the variable unset), and asserts the header on the running container. It
+  answered `200` with `Content-Security-Policy: frame-ancestors 'self'
+  https://registrar.atheniq.institute` and no `X-Frame-Options`. The same build
+  never finished on this workstation — the Docker engine died during `next build`
+  on a 3.9 GB VM, which `docs/cutover.md` records.
 - **Live gateway**: the bridge's `/health` against the real OmniRoute answered
   `ok` with the model catalog, so the configured key and base URL work.
 

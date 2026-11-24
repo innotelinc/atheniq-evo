@@ -110,11 +110,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Publishing needs the account to allow it: a token granted packages: write
-      # still gets `error from registry: denied` on the manifest when the
-      # repository's workflow permissions are read-only, and that is an account
-      # setting, not something this file can repair. The artifact below is the
-      # path that always works, so a refused publish is reported, not fatal.
+      # The run that first created the package was answered `error from
+      # registry: denied` on the manifest; a later run pushed cleanly. A refusal
+      # is reported rather than fatal, because the artifact below carries the
+      # image either way, and pulling the package needs read:packages anyway
+      # (docs/cutover.md).
       - name: Publish
         id: publish
         if: github.event_name != 'pull_request'

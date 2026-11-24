@@ -124,6 +124,12 @@ container, and publishes `ghcr.io/innotelinc/atheniq-evo-openmaic` as `latest` a
 load the run's artifact (`gh run download <run> --name openmaic-image`, then
 `docker load`).
 
+Publishing works from the run, but pulling that package back needs
+`read:packages`: this account's token carries `repo` and `workflow` only, so a
+workstation's `docker pull ghcr.io/innotelinc/atheniq-evo-openmaic` answers
+`error from registry: denied`. Until that scope is granted, the artifact is the
+workstation's transport — it is saved whether or not the push lands.
+
 Prove each surface by hostname against loopback — this is the check that matters
 before a proxy can confuse you:
 
