@@ -25,8 +25,9 @@ answers are decided:
 | A person applied, was admitted, and their student number | Institution registry (`apps/institution`) | the console receives the `lrn_…` id; the bridge never sees a password |
 | A student's portal account and `@atheniq.institute` address | Institution registry | the mail provider activates the mailbox; nothing else reads the password |
 | A person exists, their name and email | Console | receives an id and display data |
-| Course catalog, price, degree plans | Console | LMS receives an OLX package |
-| Registration for a term course | Institution registry, then the LMS | the registrar reconciles; classroom launch stays with the console |
+| The Institute's course catalog, course authoring and AI generation | Institution console (`apps/institution`: `catalog.ts`, `ai.ts`) — one writer | public site, portal and LMS sync read it; the Next.js console `308`s `/courses` and `/generate` there |
+| Course price and degree plans | Console (records) | LMS receives an OLX package; it no longer authors the catalog |
+| Registration for a term course | Institution registry, then the LMS | the registrar reconciles; classroom launch stays with the console's portal route |
 | Courseware, progress, gradebook | Open edX LMS | bridge writes completion + optional grade |
 | In-class instruction, what the classroom observed | OpenMAIC → bridge ledger | console records the resulting completion |
 | Eligibility for a credential | Console (`lib/eligibility.ts`) | bridge asks, never decides |
@@ -36,11 +37,17 @@ answers are decided:
 The rule behind the table: **the system that owns a fact is the only one that may
 decide it.** The bridge orchestrates and remembers; it does not overrule.
 
-The institution surface is deliberately separate from the console. The
-institution owns the facts only it can own — an application, an admission, a
-student number, an address — and reads the console and bridge for academic
-facts. `docs/institution.md` describes the lifecycle, the two hostnames and the
-production hardening order.
+The institution is the staff console. `registrar.atheniq.institute` serves it,
+and it owns the facts only it can own — an application, an admission, a student
+number, an address, and the catalog a student registers from — and reads the
+bridge for academic facts. Its registrar has four sections (overview,
+admissions, students, courses) rather than the console's course pages. The
+Next.js console is the records and awards service beside it: no registrar host,
+no course authoring, and `/courses` and `/generate` answer `308` to the
+institution (`INSTITUTION_CONSOLE_URL`). The catalog the institution writes is
+the same record the portal registers against and the LMS sync reports on.
+`docs/institution.md` describes the lifecycle, the two hostnames, the catalog and
+the production hardening order.
 
 ## Flow 1 — launch
 
@@ -73,7 +80,7 @@ lines, no JWT dependency in an app that does not otherwise need one.
 
 ## Flow 2 — generate
 
-The console (or a registrar action) posts a requirement to the bridge. The bridge
+The institution console (or a registrar action) posts a requirement to the bridge. The bridge
 mints a token for a classroom id it has already chosen, calls OpenMAIC's
 `POST /api/generate-classroom`, and records the job id and stage. Generation then
 runs inside the OpenMAIC process and survives the browser leaving the page.

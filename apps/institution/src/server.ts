@@ -16,7 +16,11 @@
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { COURSES, programBySlug } from "./content.ts";
+import { Catalog, coerceGrading, coerceModules, type CourseInput } from "./catalog.ts";
+import { coerceDraft, generateDraft, suggestCode } from "./ai.ts";
+import { programBySlug } from "./content.ts";
+import { fetchLmsCatalog } from "./sync.ts";
+import { signInToClassroom, stageFrom, startClassroom } from "./classroom.ts";
 import {
   AttemptLimiter,
   SESSION_COOKIE,
@@ -57,6 +61,14 @@ import {
   studentDetail,
   students,
 } from "./views/registrar.ts";
+import {
+  classroom as classroomView,
+  courseForm,
+  courseValues,
+  generateForm,
+  generatePreview,
+  index as coursesIndex,
+} from "./views/courses.ts";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const SERVICE = "atheniq-institution";
@@ -81,6 +93,7 @@ interface RequestContext {
   ip: string;
   student: Student | null;
   mailer: Mailer | null;
+  fetcher: typeof fetch;
   params: Record<string, string>;
 }
 
@@ -99,6 +112,8 @@ export interface ServerDeps {
   registry: Registry;
   /** Override for tests; defaults to the configured provider. */
   mailer?: Mailer | null;
+  /** Override for tests; the real service uses the global fetch. */
+  fetcher?: typeof fetch;
 }
 
 const routes: Route[] = [];
@@ -140,6 +155,7 @@ function contextFor(config: InstitutionConfig): UiContext {
     registrarOrigin: config.registrarOrigin,
     consoleUrl: config.consoleUrl,
     mailDomain: config.mailDomain,
+    lmsUrl: config.lmsBaseUrl,
     demo: config.seedDemo,
   };
 }
@@ -231,11 +247,13 @@ async function provisionMailbox(
 /* ------------------------------------------------------------------ routes */
 
 route("public", "GET", "/", ({ config }) => html(200, home(contextFor(config))));
-route("public", "GET", "/academics", ({ config }) => html(200, academics(contextFor(config))));
-route("public", "GET", "/academics/:slug", ({ config, params }) => {
+route("public", "GET", "/academics", ({ config, registry }) =>
+  html(200, academics(contextFor(config), registry.courses().all())),
+);
+route("public", "GET", "/academics/:slug", ({ config, registry, params }) => {
   const program = programBySlug(params.slug ?? "");
   if (!program) return html(404, notFound(contextFor(config), "public"));
-  return html(200, programPage(contextFor(config), program));
+  return html(200, programPage(contextFor(config), program, registry.courses().all()));
 });
 route("public", "GET", "/admissions", ({ config }) => html(200, admissions(contextFor(config))));
 route("public", "GET", "/admissions/apply", ({ config, url }) => {
@@ -302,14 +320,26 @@ route("public", "GET", "/portal/dashboard", async (context) => {
   const transcript = await fetchTranscript(context.config, student.id);
   return html(
     200,
-    dashboard(contextFor(context.config), student, context.registry.enrollmentsFor(student.id), transcript),
+    dashboard(
+      contextFor(context.config),
+      student,
+      context.registry.enrollmentsFor(student.id),
+      transcript,
+      context.registry.courses().all(),
+    ),
   );
 });
 route("public", "GET", "/portal/register", (context) => {
   const student = studentRequired(context);
   return html(
     200,
-    register(contextFor(context.config), student, context.registry.enrollmentsFor(student.id), seatCounts(context.registry)),
+    register(
+      contextFor(context.config),
+      student,
+      context.registry.enrollmentsFor(student.id),
+      seatCounts(context.registry),
+      context.registry.courses().all(),
+    ),
   );
 });
 route("public", "POST", "/portal/register", (context) => {
@@ -319,15 +349,25 @@ route("public", "POST", "/portal/register", (context) => {
   const enrollments = context.registry.enrollmentsFor(student.id);
   const ui = contextFor(context.config);
   const seats = seatCounts(context.registry);
+  const courses = context.registry.courses().all();
   if (!result.ok) {
-    return html(409, register(ui, student, enrollments, seats, { error: result.error }));
+    return html(409, register(ui, student, enrollments, seats, courses, { error: result.error }));
   }
-  return html(200, register(ui, student, enrollments, seats, { notice: `Registered for ${code}. The seat is held for you.` }));
+  return html(200, register(ui, student, enrollments, seats, courses, { notice: `Registered for ${code}. The seat is held for you.` }));
 });
 route("public", "GET", "/portal/record", async (context) => {
   const student = studentRequired(context);
   const transcript = await fetchTranscript(context.config, student.id);
-  return html(200, record(contextFor(context.config), student, context.registry.enrollmentsFor(student.id), transcript));
+  return html(
+    200,
+    record(
+      contextFor(context.config),
+      student,
+      context.registry.enrollmentsFor(student.id),
+      transcript,
+      context.registry.courses().all(),
+    ),
+  );
 });
 route("public", "GET", "/portal/account", (context) => {
   const student = studentRequired(context);
@@ -359,7 +399,13 @@ route("registrar", "GET", "/", ({ config, registry }) => {
   const ui = contextFor(config);
   return html(
     200,
-    registrarDashboard(ui, registry.summary(), registry.applications(), registry.students()),
+    registrarDashboard(
+      ui,
+      registry.summary(),
+      registry.applications(),
+      registry.students(),
+      registry.courses().summary(),
+    ),
   );
 });
 route("registrar", "POST", "/signin", (context) => {
@@ -455,10 +501,16 @@ route("registrar", "GET", "/students/:id", ({ config, registry, params, url }) =
   if (!student) return html(404, notFound(contextFor(config), "registrar"));
   return html(
     200,
-    studentDetail(contextFor(config), student, registry.enrollmentsFor(student.id), {
-      error: url.searchParams.get("error") ?? undefined,
-      notice: url.searchParams.get("notice") ?? undefined,
-    }),
+    studentDetail(
+      contextFor(config),
+      student,
+      registry.enrollmentsFor(student.id),
+      registry.courses().all(),
+      {
+        error: url.searchParams.get("error") ?? undefined,
+        notice: url.searchParams.get("notice") ?? undefined,
+      },
+    ),
   );
 });
 route("registrar", "POST", "/students/:id/reset", async ({ config, registry, mailer, params }) => {
@@ -467,7 +519,12 @@ route("registrar", "POST", "/students/:id/reset", async ({ config, registry, mai
   if (!student) return html(404, notFound(ui, "registrar"));
   const result = registry.resetAccess(student.id);
   if (!result.ok) {
-    return html(409, studentDetail(ui, student, registry.enrollmentsFor(student.id), { error: result.error }));
+    return html(
+      409,
+      studentDetail(ui, student, registry.enrollmentsFor(student.id), registry.courses().all(), {
+        error: result.error,
+      }),
+    );
   }
   const mailbox = await provisionMailbox(registry, mailer, student, result.value.tempPassword);
   const fresh = registry.student(student.id) ?? student;
@@ -480,17 +537,467 @@ route("registrar", "POST", "/students/:id/reset", async ({ config, registry, mai
       : "Access reset. The portal password changed, but the mailbox could not be updated. Fix the Stalwart settings and reset again.";
   return html(
     200,
-    studentDetail(ui, fresh, registry.enrollmentsFor(fresh.id), {
+    studentDetail(ui, fresh, registry.enrollmentsFor(fresh.id), registry.courses().all(), {
       notice,
       tempPassword: result.value.tempPassword,
     }),
   );
 });
 
+/* ---------------------------------------------------------------- courses */
+
+function parsedStatus(value: string | null): "draft" | "published" | "archived" {
+  return value === "published" || value === "archived" ? value : "draft";
+}
+
+function splitLines(value: string | null): string[] {
+  return (value ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+interface ParsedCourse {
+  values: Record<string, string>;
+  input: CourseInput | null;
+  error?: string;
+  fields?: Record<string, string>;
+}
+
+/** Turn a catalog form post into the catalog's input shape, or a field error. */
+function parseCourseBody(body: URLSearchParams, catalog: Catalog): ParsedCourse {
+  const raw = (name: string): string => body.get(name) ?? "";
+  const values: Record<string, string> = {
+    code: raw("code").trim().toUpperCase() || suggestCode(catalog.all(), "AI"),
+    title: raw("title"),
+    termId: raw("termId"),
+    credits: raw("credits"),
+    instructor: raw("instructor"),
+    format: raw("format"),
+    seats: raw("seats"),
+    weeks: raw("weeks"),
+    summary: raw("summary"),
+    description: raw("description"),
+    outcomes: raw("outcomes"),
+    prerequisites: raw("prerequisites"),
+    audience: raw("audience"),
+    status: parsedStatus(body.get("status")),
+    modules: raw("modules"),
+    grading: raw("grading"),
+  };
+
+  const modulesRaw = (values.modules ?? "").trim();
+  let modules: unknown = [];
+  if (modulesRaw) {
+    try {
+      modules = JSON.parse(modulesRaw);
+    } catch {
+      return {
+        values,
+        input: null,
+        error: "The modules field is not valid JSON.",
+        fields: { modules: "Not valid JSON." },
+      };
+    }
+  }
+
+  const gradingRaw = (values.grading ?? "").trim();
+  let grading: unknown = [];
+  if (gradingRaw) {
+    try {
+      grading = JSON.parse(gradingRaw);
+    } catch {
+      return {
+        values,
+        input: null,
+        error: "The grading field is not valid JSON.",
+        fields: { grading: "Not valid JSON." },
+      };
+    }
+  }
+
+  const input: CourseInput = {
+    code: values.code ?? "",
+    title: values.title ?? "",
+    termId: values.termId ?? "",
+    credits: Number(values.credits),
+    instructor: values.instructor ?? "",
+    format: values.format ?? "",
+    seats: Number(values.seats),
+    weeks: Number(values.weeks),
+    summary: values.summary ?? "",
+    description: values.description ?? "",
+    outcomes: splitLines(values.outcomes ?? ""),
+    prerequisites: splitLines(values.prerequisites ?? ""),
+    audience: values.audience ?? "",
+    modules: coerceModules(modules),
+    grading: coerceGrading(grading),
+    programs: body.getAll("programs"),
+    status: parsedStatus(values.status ?? null),
+  };
+  return { values, input };
+}
+
+route("registrar", "GET", "/courses", ({ config, registry, url }) => {
+  const ui = contextFor(config);
+  const notice = url.searchParams.get("notice");
+  const error = url.searchParams.get("error");
+  return html(
+    200,
+    coursesIndex(ui, registry.courses().all(), registry.courses().syncState(), {
+      ...(notice ? { notice } : {}),
+      ...(error ? { error } : {}),
+    }),
+  );
+});
+route("registrar", "POST", "/courses/sync", async ({ config, registry, fetcher }) => {
+  const catalog = registry.courses();
+  const result = await fetchLmsCatalog(config, fetcher);
+  if (!result.ok) {
+    catalog.recordSyncError(result.error ?? "The LMS sync failed.");
+    return redirect(`/courses?error=${encodeURIComponent(result.error ?? "The LMS sync failed.")}`);
+  }
+  const known = new Set(catalog.all().map((course) => course.code));
+  catalog.recordSync(
+    {
+      at: new Date().toISOString(),
+      keys: result.courses.map((course) => course.key),
+      codes: result.courses.map((course) => course.code),
+      external: result.courses.filter((course) => !known.has(course.code)),
+    },
+    null,
+  );
+  return redirect(
+    `/courses?notice=${encodeURIComponent(`Checked ${config.lmsBaseUrl}: ${result.courses.length} courses served by the LMS.`)}`,
+  );
+});
+
+route("registrar", "GET", "/courses/new", ({ config, registry }) => {
+  const catalog = registry.courses();
+  return html(
+    200,
+    courseForm(contextFor(config), catalog.all(), {
+      mode: "new",
+      values: {
+        code: suggestCode(catalog.all(), "AI"),
+        termId: "2027A",
+        credits: "15",
+        seats: "30",
+        weeks: "12",
+        format: "Studio · 12 weeks",
+        status: "draft",
+      },
+      sync: catalog.syncState(),
+    }),
+  );
+});
+route("registrar", "POST", "/courses", ({ config, registry, body }) => {
+  const catalog = registry.courses();
+  const ui = contextFor(config);
+  const parsed = parseCourseBody(body, catalog);
+  if (!parsed.input) {
+    return html(
+      422,
+      courseForm(ui, catalog.all(), {
+        mode: "new",
+        values: parsed.values,
+        ...(parsed.fields ? { fields: parsed.fields } : {}),
+        error: parsed.error ?? "Please correct the highlighted fields.",
+        sync: catalog.syncState(),
+      }),
+    );
+  }
+  const result = catalog.create(parsed.input);
+  if (!result.ok) {
+    return html(
+      422,
+      courseForm(ui, catalog.all(), {
+        mode: "new",
+        values: parsed.values,
+        ...(result.fields ? { fields: result.fields } : {}),
+        error: result.error,
+        sync: catalog.syncState(),
+      }),
+    );
+  }
+  return redirect(
+    `/courses/${result.value.code}?notice=${encodeURIComponent(`${result.value.code} was added to the catalog as a ${result.value.status}.`)}`,
+  );
+});
+
+route("registrar", "GET", "/courses/generate", ({ config, registry }) => {
+  const catalog = registry.courses();
+  return html(
+    200,
+    generateForm(contextFor(config), {
+      termId: "2027A",
+      code: suggestCode(catalog.all(), "AI"),
+    }),
+  );
+});
+route("registrar", "POST", "/courses/generate", async ({ config, registry, body, fetcher }) => {
+  const ui = contextFor(config);
+  const prompt = (body.get("prompt") ?? "").trim();
+  const termId = body.get("termId") ?? "2027A";
+  const code = (body.get("code") ?? "").trim().toUpperCase();
+  if (prompt.length < 12) {
+    return html(
+      422,
+      generateForm(ui, {
+        error: "Describe the course in at least a sentence — the audience and the subject are enough.",
+        prompt,
+        termId,
+      }),
+    );
+  }
+  const result = await generateDraft(config, prompt, fetcher);
+  return html(
+    200,
+    generatePreview(ui, result, {
+      code: code || suggestCode(registry.courses().all(), "AI"),
+      termId,
+      instructor: "",
+      format: "",
+      seats: "30",
+      weeks: String(result.draft.weeks),
+      status: "draft",
+    }),
+  );
+});
+route("registrar", "POST", "/courses/generate/accept", ({ config, registry, body }) => {
+  const catalog = registry.courses();
+  const ui = contextFor(config);
+  const note = body.get("note") ?? "This draft was generated in the AI studio.";
+  const engine = body.get("engine") === "rules" ? "rules" : "gateway";
+  let draft: ReturnType<typeof coerceDraft> = null;
+  try {
+    draft = coerceDraft(JSON.parse(body.get("draft") ?? "null") as unknown);
+  } catch {
+    draft = null;
+  }
+  if (!draft) {
+    return html(
+      422,
+      generateForm(ui, { error: "The draft could not be read. Generate it again and accept the new preview." }),
+    );
+  }
+
+  const termId = body.get("termId") ?? "2027A";
+  const weeks = Number(body.get("weeks"));
+  const seats = Number(body.get("seats"));
+  const input: CourseInput = {
+    code: (body.get("code") ?? "").trim().toUpperCase() || suggestCode(catalog.all(), "AI"),
+    title: draft.title,
+    termId,
+    credits: draft.credits,
+    instructor: (body.get("instructor") ?? "").trim() || draft.instructor,
+    format: (body.get("format") ?? "").trim() || draft.format,
+    seats: Number.isFinite(seats) ? seats : 30,
+    weeks: Number.isFinite(weeks) ? weeks : draft.weeks,
+    summary: draft.summary,
+    description: draft.description,
+    outcomes: draft.outcomes,
+    prerequisites: draft.prerequisites,
+    audience: draft.audience,
+    modules: draft.modules,
+    grading: draft.grading,
+    programs: [],
+    status: body.get("status") === "published" ? "published" : "draft",
+    source: "ai",
+  };
+  const result = catalog.create(input);
+  if (!result.ok) {
+    return html(
+      422,
+      generatePreview(
+        ui,
+        { draft, engine, note },
+        {
+          code: input.code,
+          termId,
+          instructor: input.instructor,
+          format: input.format,
+          seats: String(input.seats),
+          weeks: String(input.weeks),
+          status: input.status ?? "draft",
+        },
+        { error: result.error },
+      ),
+    );
+  }
+  return redirect(
+    `/courses/${result.value.code}?notice=${encodeURIComponent(`Accepted the AI draft as ${result.value.code}. Review it, then publish when it is right.`)}`,
+  );
+});
+
+route("registrar", "POST", "/courses/import", ({ config, registry, body }) => {
+  const catalog = registry.courses();
+  const ui = contextFor(config);
+  const code = (body.get("code") ?? "").trim().toUpperCase();
+  const title = (body.get("title") ?? "").trim();
+  const key = (body.get("key") ?? "").trim();
+  if (!code || !title) {
+    return html(422, coursesIndex(ui, catalog.all(), catalog.syncState(), {
+      error: "The import needs a course code and a title from the LMS.",
+    }));
+  }
+  const termFromKey = /^course-v1:[^+]+\+[^+]+\+(.+)$/.exec(key)?.[1] ?? "";
+  const termId = /^\d{4}A$|^\d{4}B$|^\d{4}C$/.test(termFromKey) ? termFromKey : "2027A";
+  const result = catalog.create({
+    code,
+    title,
+    termId,
+    credits: 15,
+    instructor: "Faculty of the Institute",
+    format: "Imported from the LMS",
+    seats: 30,
+    weeks: 12,
+    summary: `${title} — imported from the LMS catalog. Edit the summary, credits and curriculum before publishing it here.`,
+    status: "draft",
+  });
+  if (!result.ok) {
+    return html(422, coursesIndex(ui, catalog.all(), catalog.syncState(), { error: result.error }));
+  }
+  return redirect(`/courses/${result.value.code}?notice=${encodeURIComponent(`Imported ${result.value.code} as a draft. It is a local record until you publish it.`)}`);
+});
+
+route("registrar", "GET", "/courses/:code", ({ config, registry, params, url }) => {
+  const catalog = registry.courses();
+  const course = catalog.byCode(params.code ?? "");
+  const ui = contextFor(config);
+  if (!course) return html(404, notFound(ui, "registrar"));
+  const notice = url.searchParams.get("notice");
+  const error = url.searchParams.get("error");
+  return html(
+    200,
+    courseForm(ui, catalog.all(), {
+      mode: "edit",
+      values: courseValues(course),
+      ...(notice ? { notices: [notice] } : {}),
+      ...(error ? { error } : {}),
+      sync: catalog.syncState(),
+    }),
+  );
+});
+route("registrar", "POST", "/courses/:code", ({ config, registry, params, body }) => {
+  const catalog = registry.courses();
+  const ui = contextFor(config);
+  const code = (params.code ?? "").toUpperCase();
+  const existing = catalog.byCode(code);
+  if (!existing) return html(404, notFound(ui, "registrar"));
+  const parsed = parseCourseBody(body, catalog);
+  parsed.values.code = code;
+  if (!parsed.input) {
+    return html(
+      422,
+      courseForm(ui, catalog.all(), {
+        mode: "edit",
+        values: parsed.values,
+        ...(parsed.fields ? { fields: parsed.fields } : {}),
+        error: parsed.error ?? "Please correct the highlighted fields.",
+        sync: catalog.syncState(),
+      }),
+    );
+  }
+  const result = catalog.update(code, parsed.input);
+  if (!result.ok) {
+    return html(
+      422,
+      courseForm(ui, catalog.all(), {
+        mode: "edit",
+        values: parsed.values,
+        ...(result.fields ? { fields: result.fields } : {}),
+        error: result.error,
+        sync: catalog.syncState(),
+      }),
+    );
+  }
+  return redirect(`/courses/${code}?notice=${encodeURIComponent(`${code} saved.`)}`);
+});
+route("registrar", "POST", "/courses/:code/delete", ({ config, registry, params }) => {
+  const catalog = registry.courses();
+  const code = (params.code ?? "").toUpperCase();
+  if (!catalog.byCode(code)) return html(404, notFound(contextFor(config), "registrar"));
+  const enrolled = registry.enrollmentsForCourse(code);
+  if (enrolled > 0) {
+    return redirect(
+      `/courses/${code}?error=${encodeURIComponent(
+        `${code} has ${enrolled} enrollment${enrolled === 1 ? "" : "s"} on record. Archive it instead of removing it.`,
+      )}`,
+    );
+  }
+  const result = catalog.remove(code);
+  if (!result.ok) return redirect(`/courses/${code}?error=${encodeURIComponent(result.error)}`);
+  return redirect(`/courses?notice=${encodeURIComponent(`Removed ${code} from the catalog.`)}`);
+});
+
+/** The classroom cookie the OpenMAIC host method reads. */
+function classroomCookie(token: string, config: InstitutionConfig): string {
+  const parts = [
+    `atheniq_classroom=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.max(300, 900)}`,
+  ];
+  if (config.classroomCookieDomain) parts.push(`Domain=${config.classroomCookieDomain}`);
+  if (config.cookieSecure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+route("registrar", "GET", "/courses/:code/classroom", ({ config, registry, params }) => {
+  const course = registry.courses().byCode(params.code ?? "");
+  const ui = contextFor(config);
+  if (!course) return html(404, notFound(ui, "registrar"));
+  const base = config.openmaicPublicUrl;
+  const stage = course.classroom?.stageId ?? null;
+  // A classroom exists as soon as the bridge has created it, but OpenMAIC names
+  // the stage only once the generator has written one. Until then embed the
+  // classroom host: it is the same signed-in owner's library, not an empty page.
+  const url = base && course.classroom ? (stage ? `${base}/classroom/${encodeURIComponent(stage)}` : `${base}/`) : null;
+  return html(
+    200,
+    classroomView(ui, course, {
+      configured: Boolean(base && config.bridgeUrl && config.bridgeToken),
+      url,
+    }),
+  );
+});
+route("registrar", "POST", "/courses/:code/classroom", async ({ config, registry, params, fetcher }) => {
+  const catalog = registry.courses();
+  const ui = contextFor(config);
+  let course = catalog.byCode(params.code ?? "");
+  if (!course) return html(404, notFound(ui, "registrar"));
+  const configured = Boolean(config.openmaicPublicUrl && config.bridgeUrl && config.bridgeToken);
+
+  if (!course.classroom?.classroomId) {
+    const started = await startClassroom(config, course, fetcher);
+    if (!started.ok || !started.classroom) {
+      return html(502, classroomView(ui, course, { configured, error: started.note }));
+    }
+    const saved = catalog.setClassroom(course.code, started.classroom);
+    if (saved.ok) course = saved.value;
+  }
+
+  const signed = await signInToClassroom(config, course, fetcher);
+  if (!signed.ok || !signed.token) {
+    return html(502, classroomView(ui, course, { configured, error: signed.note }));
+  }
+  // A later sign-in can name the stage the first response did not have yet.
+  const stage = stageFrom(signed.url);
+  if (stage && course.classroom && stage !== course.classroom.stageId) {
+    const saved = catalog.setClassroom(course.code, { ...course.classroom, stageId: stage });
+    if (saved.ok) course = saved.value;
+  }
+  return redirect(`/courses/${course.code}/classroom`, [classroomCookie(signed.token, config)]);
+});
+
 const limiter = new AttemptLimiter();
 
 function seatCounts(registry: Registry): Record<string, number> {
-  return Object.fromEntries(COURSES.map((course) => [course.code, registry.seatsTaken(course.code)]));
+  return Object.fromEntries(
+    registry.courses().all().map((course) => [course.code, registry.seatsTaken(course.code)]),
+  );
 }
 
 /* ---------------------------------------------------------------- dispatch */
@@ -513,6 +1020,7 @@ function assetReply(path: string, method: string): Reply | null {
 
 export function createInstitutionServer(deps: ServerDeps) {
   const { config, registry } = deps;
+  const fetcher = deps.fetcher ?? fetch;
   const mailer = deps.mailer === undefined ? createMailer(config) : deps.mailer;
   const registrarHostname = hostnameOf(new URL(config.registrarOrigin).host);
 
@@ -536,9 +1044,11 @@ export function createInstitutionServer(deps: ServerDeps) {
     response.setHeader("x-content-type-options", "nosniff");
     response.setHeader("referrer-policy", "strict-origin-when-cross-origin");
     response.setHeader("permissions-policy", "geolocation=(), camera=(), microphone=()");
+    // The classroom is the only embedded origin, and only when it is configured.
+    const frameSource = config.openmaicPublicUrl ? `frame-src 'self' ${config.openmaicPublicUrl}; ` : "frame-src 'self'; ";
     response.setHeader(
       "content-security-policy",
-      "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'",
+      `default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; ${frameSource}form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'`,
     );
     response.setHeader("x-frame-options", "DENY");
     if (config.cookieSecure) {
@@ -614,6 +1124,7 @@ export function createInstitutionServer(deps: ServerDeps) {
       ip: ipOf(request, config),
       student,
       mailer,
+      fetcher,
       params: {},
     };
 

@@ -7,10 +7,12 @@
  * student id from the session cookie.
  */
 
-import { COURSES, TERMS, courseByCode, programBySlug, termById } from "../content.ts";
+import type { CatalogCourse } from "../catalog.ts";
+import { TERMS, programBySlug, termById } from "../content.ts";
 import type { Enrollment, Student } from "../store.ts";
 import type { TranscriptResult } from "../bridge.ts";
 import {
+  courseOf,
   dateLabel,
   emptyState,
   esc,
@@ -77,12 +79,13 @@ export function dashboard(
   student: Student,
   enrollments: Enrollment[],
   transcript: TranscriptResult,
+  courses: CatalogCourse[],
 ): string {
   const current = enrollments.filter((item) => item.status === "registered");
   const completed = enrollments.filter((item) => item.status === "completed");
   const program = programBySlug(student.programSlug);
   const term = termById(student.termId);
-  const credits = completed.reduce((total, item) => total + (courseByCode(item.courseCode)?.credits ?? 0), 0);
+  const credits = completed.reduce((total, item) => total + (courseOf(courses, item.courseCode)?.credits ?? 0), 0);
 
   const body = `
   ${pageHead({
@@ -133,7 +136,7 @@ export function dashboard(
                 <tbody>
                   ${current
                     .map((enrollment) => {
-                      const course = courseByCode(enrollment.courseCode);
+                      const course = courseOf(courses, enrollment.courseCode);
                       const enrollmentTerm = termById(enrollment.termId);
                       return `<tr>
                         <td><span class="strong">${esc(course?.title ?? enrollment.courseCode)}</span><span class="table__sub">${esc(course?.code ?? "")} · ${esc(course?.format ?? "")}</span></td>
@@ -223,6 +226,7 @@ export function register(
   student: Student,
   enrollments: Enrollment[],
   seatCounts: Record<string, number>,
+  courses: CatalogCourse[],
   state: { error?: string; notice?: string } = {},
 ): string {
   const registered = new Set(
@@ -230,14 +234,16 @@ export function register(
   );
 
   const terms = TERMS.map((term) => {
-    const courses = COURSES.filter((course) => course.termId === term.id);
-    if (courses.length === 0) return "";
+    const inTerm = courses.filter(
+      (course) => course.termId === term.id && course.status === "published",
+    );
+    if (inTerm.length === 0) return "";
     return `<div class="term-block">
       <div class="term-block__head">
         <h2>${esc(term.name)}</h2>
         <span>${esc(term.starts)} — ${esc(term.ends)} · registration ${esc(term.registration)}</span>
       </div>
-      ${courses
+      ${inTerm
         .map((course) => {
           const taken = registered.has(course.code);
           const seats = Math.max(0, course.seats - (seatCounts[course.code] ?? 0));
@@ -302,9 +308,10 @@ export function record(
   student: Student,
   enrollments: Enrollment[],
   transcript: TranscriptResult,
+  courses: CatalogCourse[],
 ): string {
   const completed = enrollments.filter((item) => item.status === "completed");
-  const credits = completed.reduce((total, item) => total + (courseByCode(item.courseCode)?.credits ?? 0), 0);
+  const credits = completed.reduce((total, item) => total + (courseOf(courses, item.courseCode)?.credits ?? 0), 0);
   const program = programBySlug(student.programSlug);
 
   const body = `
@@ -334,7 +341,7 @@ export function record(
               <tbody>
                 ${enrollments
                   .map((enrollment) => {
-                    const course = courseByCode(enrollment.courseCode);
+                    const course = courseOf(courses, enrollment.courseCode);
                     return `<tr>
                       <td><span class="strong">${esc(course?.title ?? enrollment.courseCode)}</span><span class="table__sub">${esc(enrollment.courseCode)}</span></td>
                       <td>${esc(termById(enrollment.termId)?.name ?? enrollment.termId)}</td>

@@ -15,7 +15,8 @@
 import { randomBytes } from "node:crypto";
 import { hashPassword, temporaryPassword, verifyPassword } from "./auth.ts";
 import type { InstitutionConfig } from "./config.ts";
-import { COURSES, PROGRAMS, TERMS, courseByCode, programBySlug, termById } from "./content.ts";
+import { PROGRAMS, TERMS, programBySlug, termById } from "./content.ts";
+import { Catalog } from "./catalog.ts";
 import type { Store, Application, Enrollment, Student } from "./store.ts";
 
 export type Result<T> =
@@ -70,10 +71,17 @@ function localPart(firstName: string, lastName: string): string {
 export class Registry {
   private readonly store: Store;
   private readonly config: InstitutionConfig;
+  /** The one catalog: registration and credits read the same records the console edits. */
+  private readonly catalog: Catalog;
 
-  constructor(store: Store, config: InstitutionConfig) {
+  constructor(store: Store, config: InstitutionConfig, catalog: Catalog = Catalog.inMemory()) {
     this.store = store;
     this.config = config;
+    this.catalog = catalog;
+  }
+
+  courses(): Catalog {
+    return this.catalog;
   }
 
   applications(): Application[] {
@@ -283,10 +291,15 @@ export class Registry {
       .enrollments.filter((item) => item.courseCode === courseCode && item.status === "registered").length;
   }
 
+  /** Every enrollment that names a course, including completed and withdrawn. */
+  enrollmentsForCourse(courseCode: string): number {
+    return this.store.read().enrollments.filter((item) => item.courseCode === courseCode).length;
+  }
+
   creditsEarned(studentId: string): number {
     return this.enrollmentsFor(studentId)
       .filter((item) => item.status === "completed")
-      .reduce((total, item) => total + (courseByCode(item.courseCode)?.credits ?? 0), 0);
+      .reduce((total, item) => total + (this.catalog.byCode(item.courseCode)?.credits ?? 0), 0);
   }
 
   register(studentId: string, courseCode: string, now: Date = new Date()): Result<Enrollment> {
@@ -294,8 +307,10 @@ export class Registry {
     if (!student) return { ok: false, error: "No such student." };
     if (student.status !== "active") return { ok: false, error: "This account is suspended." };
 
-    const course = courseByCode(courseCode.trim().toUpperCase());
-    if (!course) return { ok: false, error: "No such course." };
+    const course = this.catalog.byCode(courseCode);
+    if (!course || course.status !== "published") {
+      return { ok: false, error: "That course is not open for registration." };
+    }
 
     const term = termById(course.termId);
     if (!term || term.registration === "closed") {
@@ -381,7 +396,7 @@ export class Registry {
       registrations: data.enrollments.filter((item) => item.status === "registered").length,
       mailboxesReserved: data.students.filter((item) => item.mailbox.status === "reserved").length,
       programs: PROGRAMS.length,
-      courses: COURSES.length,
+      courses: this.catalog.all().length,
       terms: TERMS.length,
     };
   }

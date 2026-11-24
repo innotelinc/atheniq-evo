@@ -1973,3 +1973,86 @@ ol {
     break-inside: avoid;
   }
 }
+
+/* ---------------------------------------------------------------- console */
+
+.console-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 24px 0 8px;
+}
+
+.panel__divider {
+  height: 1px;
+  background: var(--rule);
+  margin: 24px 0;
+}
+
+.panel__list {
+  margin: 12px 0 0;
+  padding-left: 18px;
+}
+
+.panel__list li {
+  margin-bottom: 6px;
+}
+
+.check-row {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.field__label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.module-cards {
+  display: grid;
+  gap: 16px;
+}
+
+.module-card {
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 20px;
+  background: var(--card);
+}
+
+.module-card h3 {
+  margin: 4px 0 8px;
+  font-family: var(--serif);
+  font-weight: 500;
+}
+
+.module-card ul {
+  margin: 10px 0;
+  padding-left: 18px;
+}
+
+.frame {
+  width: 100%;
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--ink);
+}
+
+.frame iframe {
+  display: block;
+  width: 100%;
+  height: 38rem;
+  border: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.mt-12 {
+  margin-top: 48px;
+}

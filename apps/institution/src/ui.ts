@@ -6,6 +6,7 @@
  * Nothing in a view is trusted HTML except the strings built here.
  */
 
+import type { CatalogCourse } from "./catalog.ts";
 import type { Program } from "./content.ts";
 
 const ENTITIES: Record<string, string> = {
@@ -52,7 +53,14 @@ export interface UiContext {
   registrarOrigin: string;
   consoleUrl: string;
   mailDomain: string;
+  /** The LMS the catalog syncs against, e.g. https://atheniq.courses. */
+  lmsUrl: string;
   demo: boolean;
+}
+
+/** The course record a view should show, whether or not the catalog knows it. */
+export function courseOf(courses: CatalogCourse[], code: string): CatalogCourse | undefined {
+  return courses.find((course) => course.code === code.trim().toUpperCase());
 }
 
 export interface LayoutInput {
@@ -135,26 +143,38 @@ function portalHeader(viewer: Viewer | null, active: string | undefined): string
   </header>`;
 }
 
+/**
+ * The console chrome. One header for admissions, the roster and the catalog, so
+ * the registrar moves between the queue, a student and a course without
+ * changing product — and so the estate's other surfaces are always one link
+ * away. It is the same masthead the student portal uses.
+ */
 function registrarHeader(ctx: UiContext, viewer: Viewer | null, active: string | undefined): string {
   if (!viewer) {
     return `<header class="masthead masthead--app masthead--registrar">
       <div class="shell masthead__inner">
-        ${brand("/signin", "Registrar")}
-        <span class="surface-tag">Registrar</span>
-        <div class="masthead__actions"><a class="textlink" href="${esc(ctx.publicOrigin)}">Public site</a></div>
+        ${brand("/signin", "Console")}
+        <span class="surface-tag">AthenIQ console</span>
+        <div class="masthead__actions">
+          ${ctx.lmsUrl ? `<a class="textlink" href="${esc(ctx.lmsUrl)}">atheniq.courses ↗</a>` : ""}
+          <a class="textlink" href="${esc(ctx.publicOrigin)}">Public site</a>
+        </div>
       </div>
     </header>`;
   }
   return `<header class="masthead masthead--app masthead--registrar">
     <div class="shell masthead__inner">
-      ${brand("/", "Registrar")}
-      <span class="surface-tag">Registrar</span>
-      <nav class="nav" aria-label="Registrar">
-        ${navLink("/applications", "Applications", active, "applications")}
+      ${brand("/", "Console")}
+      <span class="surface-tag">AthenIQ console</span>
+      <nav class="nav" aria-label="Console">
+        ${navLink("/", "Overview", active, "dashboard")}
+        ${navLink("/applications", "Admissions", active, "applications")}
         ${navLink("/students", "Students", active, "students")}
+        ${navLink("/courses", "Courses", active, "courses")}
       </nav>
       <div class="masthead__actions">
-        ${ctx.consoleUrl ? `<a class="textlink" href="${esc(ctx.consoleUrl)}">Console ↗</a>` : ""}
+        ${ctx.lmsUrl ? `<a class="textlink" href="${esc(ctx.lmsUrl)}">atheniq.courses ↗</a>` : ""}
+        <a class="textlink" href="${esc(ctx.publicOrigin)}">Site</a>
         ${viewer ? `<span class="viewer">${esc(viewer.name)}</span>` : ""}
         <form method="post" action="/signout" class="inline-form">
           <button type="submit" class="textlink">Sign out</button>
@@ -213,8 +233,8 @@ function publicFooter(ctx: UiContext): string {
 function appFooter(ctx: UiContext, surface: Surface): string {
   return `<footer class="footer footer--slim">
     <div class="shell footer__base">
-      <p>AthenIQ Institute · ${surface === "registrar" ? "Registrar" : "Student portal"}</p>
-      <p>${surface === "registrar" ? `<a href="${esc(ctx.publicOrigin)}">Public site</a>` : `<a href="${esc(ctx.registrarOrigin)}">Registrar</a>`} · <a href="mailto:registrar@${esc(ctx.mailDomain)}">Help</a></p>
+      <p>AthenIQ Institute · ${surface === "registrar" ? "AthenIQ console" : "Student portal"}</p>
+      <p>${surface === "registrar" ? `<a href="${esc(ctx.publicOrigin)}">Public site</a> · <a href="${esc(ctx.publicOrigin)}/portal">Student portal</a>` : `<a href="${esc(ctx.registrarOrigin)}">Console</a>`}${ctx.lmsUrl ? ` · <a href="${esc(ctx.lmsUrl)}">atheniq.courses</a>` : ""} · <a href="mailto:registrar@${esc(ctx.mailDomain)}">Help</a></p>
     </div>
   </footer>`;
 }
@@ -352,13 +372,18 @@ export function statusBadge(status: string): string {
     active: "Active",
     disabled: "Disabled",
     suspended: "Suspended",
+    draft: "Draft",
+    published: "Published",
+    archived: "Archived",
+    live: "Live on atheniq.courses",
+    missing: "Not on the LMS",
   };
   const tone =
-    status === "admitted" || status === "completed" || status === "active"
+    status === "admitted" || status === "completed" || status === "active" || status === "published" || status === "live"
       ? "good"
-      : status === "denied" || status === "suspended" || status === "disabled"
+      : status === "denied" || status === "suspended" || status === "disabled" || status === "missing"
         ? "bad"
-        : status === "submitted" || status === "registered" || status === "reserved"
+        : status === "submitted" || status === "registered" || status === "reserved" || status === "draft"
           ? "warn"
           : "neutral";
   return `<span class="badge badge--${tone}">${esc(labels[status] ?? status)}</span>`;

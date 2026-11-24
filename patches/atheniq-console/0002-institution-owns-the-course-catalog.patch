@@ -1,0 +1,221 @@
+diff --git a/Dockerfile b/Dockerfile
+index 8ab585d..d402e52 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -12,6 +12,11 @@ WORKDIR /app
+ COPY --from=deps /app/node_modules ./node_modules
+ COPY . .
+ ENV NEXT_TELEMETRY_DISABLED=1
++# Course authoring lives in the institution console. Next inlines this value into
++# the middleware at build time, so it must arrive as a build argument rather than
++# a runtime variable: restarting with a different value would change nothing.
++ARG INSTITUTION_CONSOLE_URL="https://registrar.atheniq.institute"
++ENV INSTITUTION_CONSOLE_URL=$INSTITUTION_CONSOLE_URL
+ RUN npm run build
+ 
+ FROM node:22-alpine AS run
+diff --git a/README.md b/README.md
+index 2524950..2349e4b 100644
+--- a/README.md
++++ b/README.md
+@@ -1,9 +1,11 @@
+ # AthenIQ — Course & School Management Console
+ 
+-The registrar console behind [atheniq.institute](https://atheniq.institute) and
+-[atheniq.courses](https://atheniq.courses): create and generate courses, publish
+-them with their price and catalog placement, manage degree plans, and award
+-certificates and degrees through Signara.
++The records and awards service behind [atheniq.institute](https://atheniq.institute)
++and [atheniq.courses](https://atheniq.courses): manage degree plans and award
++certificates and degrees through Signara. Course authoring — adding, editing,
++generating and removing a course — belongs to the institution console at
++`registrar.atheniq.institute`; this app's `/courses` and `/generate` pages
++redirect there (`INSTITUTION_CONSOLE_URL`).
+ 
+ It is a self-hosted Next.js app (Node, no external services required) that speaks
+ the same shapes the AthenIQ platform already publishes — runtime keys
+@@ -17,8 +19,9 @@ npm run dev        # http://localhost:3100
+ 
+ ### Hosting
+ 
+-The console is published at `https://registrar.atheniq.institute` through the
+-Cerulean stack on `192.168.1.71`:
++The console is published at its own host — not `registrar.atheniq.institute`,
++which belongs to the institution console — through the Cerulean stack on
++`192.168.1.71`:
+ 
+ - **DNS** — Technitium, zone `atheniq.institute`. A 300-second A record for
+   `registrar` points at the edge's public address, `73.68.203.71` (the same
+diff --git a/app/layout.tsx b/app/layout.tsx
+index c9a0dd5..b530b88 100644
+--- a/app/layout.tsx
++++ b/app/layout.tsx
+@@ -12,7 +12,7 @@ import { ROLE_LABELS } from "@/lib/staff-policy";
+ export const metadata: Metadata = {
+   title: "AthenIQ — Course & School Management",
+   description:
+-    "Create, generate and publish AthenIQ courses; manage degree plans and award certificates and degrees through Signara.",
++    "Manage degree plans and award certificates and degrees through Signara. Course authoring is the institution console.",
+ };
+ 
+ export default async function RootLayout({ children }: { children: React.ReactNode }) {
+@@ -29,6 +29,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
+ 
+   const staff = await currentStaff();
+ 
++  // Course authoring belongs to the institution console; this sidebar links to
++  // it rather than duplicating the catalog.
++  const catalogUrl = (process.env.INSTITUTION_CONSOLE_URL || "https://registrar.atheniq.institute").replace(/\/+$/, "");
++
+   // Public pages a visitor reaches without a session wear a header of public
+   // links. The console sidebar is a set of doors that each answer with the
+   // sign-in page, which turns a stranger's first page into a dead end.
+@@ -73,10 +77,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
+               <BrandMark />
+               <span className="brand-text">
+                 <span className="brand-name">AthenIQ</span>
+-                <span className="brand-sub">Registrar console</span>
++                <span className="brand-sub">Records console</span>
+               </span>
+             </div>
+-            <Nav role={staff?.role} />
++            <Nav role={staff?.role} catalogUrl={catalogUrl} />
+             <div className="sidebar-foot">
+               {authEnabled() && staff ? (
+                 <>
+@@ -89,7 +93,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
+               ) : (
+                 <>
+                   <span className="small">Innotel Labs · AthenIQ</span>
+-                  <span className="small">Course engine · Signara</span>
++                  <span className="small">Awards · Signara</span>
+                 </>
+               )}
+             </div>
+diff --git a/components/Nav.tsx b/components/Nav.tsx
+index 9776100..29e98ee 100644
+--- a/components/Nav.tsx
++++ b/components/Nav.tsx
+@@ -58,31 +58,6 @@ const GROUPS: {
+       },
+     ],
+   },
+-  {
+-    label: "Teach",
+-    items: [
+-      {
+-        href: "/courses",
+-        label: "Courses",
+-        icon: (
+-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+-            <path d="M4 5.5A2.5 2.5 0 016.5 3H20v15H6.5A2.5 2.5 0 004 20.5z" />
+-            <path d="M4 5.5v15" />
+-          </svg>
+-        ),
+-      },
+-      {
+-        href: "/generate",
+-        label: "Course studio",
+-        icon: (
+-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+-            <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+-            <circle cx="12" cy="12" r="3.2" />
+-          </svg>
+-        ),
+-      },
+-    ],
+-  },
+   {
+     label: "Award",
+     items: [
+@@ -169,7 +144,7 @@ const GROUPS: {
+   },
+ ];
+ 
+-export function Nav({ role }: { role?: StaffRole }) {
++export function Nav({ role, catalogUrl }: { role?: StaffRole; catalogUrl?: string }) {
+   const pathname = usePathname() || "/";
+   return (
+     <nav className="nav">
+@@ -194,6 +169,14 @@ export function Nav({ role }: { role?: StaffRole }) {
+             })}
+         </div>
+       ))}
++      {catalogUrl ? (
++        <div className="nav-group">
++          <span className="nav-label">Catalog</span>
++          <a className="nav-link" href={`${catalogUrl}/courses`}>
++            Course catalog ↗
++          </a>
++        </div>
++      ) : null}
+     </nav>
+   );
+ }
+diff --git a/middleware.ts b/middleware.ts
+index 677174f..559c8cc 100644
+--- a/middleware.ts
++++ b/middleware.ts
+@@ -37,6 +37,31 @@ const PUBLIC_PATHS = [
+ 
+ const PUBLIC_SITE = /^\/site(\/|$)/;
+ 
++/**
++ * Where course authoring lives. This app keeps awards, degree plans and the
++ * internal routes the bridge calls; the catalog has one owner — the institution
++ * console at the registrar host — and these pages point there instead of
++ * offering a second place to add, edit, generate or remove a course.
++ */
++const CATALOG_OWNER = (process.env.INSTITUTION_CONSOLE_URL || "https://registrar.atheniq.institute").replace(/\/+$/, "");
++const CATALOG_PATHS = [/^\/courses(\/|$)/, /^\/generate(\/|$)/];
++/** The institution's own children of /courses, spelled the same way there. */
++const CATALOG_CHILDREN = /^\/courses\/(new|generate|sync|import)\/?$/;
++
++/**
++ * Where a catalog path ends up on the institution console. The two apps do not
++ * spell every page alike: the generator is `/courses/generate` over there, and a
++ * course record is addressed by its code rather than by this app's id — so an old
++ * `/courses/<id>` lands on the institution's catalog instead of on a 404.
++ */
++function catalogTarget(pathname: string): string | null {
++  if (!CATALOG_PATHS.some((pattern) => pattern.test(pathname))) return null;
++  if (pathname === "/generate" || pathname === "/generate/") return "/courses/generate";
++  if (pathname.startsWith("/generate/")) return "/courses";
++  if (CATALOG_CHILDREN.test(pathname)) return pathname.replace(/\/+$/, "");
++  return "/courses";
++}
++
+ /**
+  * The student portal is not the console: it authenticates a learner account with
+  * its own cookie, which staff sessions know nothing about. So the staff gate
+@@ -90,6 +115,13 @@ export async function middleware(request: NextRequest) {
+     return NextResponse.rewrite(url, { request: { headers } });
+   }
+ 
++  // Authoring moved to the institution console. A redirect rather than a 404
++  // keeps an old bookmark useful; /api/* and the public site are untouched.
++  const target = catalogTarget(pathname);
++  if (target) {
++    return NextResponse.redirect(new URL(target + search, CATALOG_OWNER), 308);
++  }
++
+   if (PUBLIC_SITE.test(pathname)) {
+     return NextResponse.next({ request: { headers: publicHeaders(request) } });
+   }
+diff --git a/next.config.mjs b/next.config.mjs
+index 6ed69fc..1b42f93 100644
+--- a/next.config.mjs
++++ b/next.config.mjs
+@@ -6,6 +6,12 @@ const nextConfig = {
+   // the public site answers on PUBLIC_SITE_HOSTS. Listing it keeps HMR and
+   // server actions working when you browse through the real hostname in dev.
+   allowedDevOrigins: ["registrar.atheniq.institute"],
++  // Course authoring lives in the institution console. Middleware and the
++  // sidebar read this value, and Next's edge runtime only sees env passed here.
++  env: {
++    INSTITUTION_CONSOLE_URL:
++      process.env.INSTITUTION_CONSOLE_URL || "https://registrar.atheniq.institute",
++  },
+ };
+ 
+ export default nextConfig;

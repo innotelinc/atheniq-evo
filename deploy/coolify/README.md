@@ -5,9 +5,10 @@ at `atheniq.innotel.site`, and the institution's registrar panel at
 `registrar.innotel.site` — applications, admission, account issuance and the
 student roster — from one container and one registry volume.
 
-`registrar.innotel.site` is **not** the AthenIQ console. The console on port 3100
-(`upstream/atheniq-console`) is a separate Next.js app for courses, schools and
-credentials. It is not in this Compose file and is not published by this
+`registrar.innotel.site` is **not** the AthenIQ console. Course authoring lives
+in this service's `/courses` section, and the console on port 3100
+(`upstream/atheniq-console`) is the records and awards service — degree plans and
+Signara credentials, with its course pages redirected here. It is not in this Compose file and is not published by this
 resource. That is why `CONSOLE_BASE_URL` stays empty: with no public console URL
 the portal hides its console link instead of pointing it at a host that does not
 answer. To publish the console later, give it its own hostname (for example

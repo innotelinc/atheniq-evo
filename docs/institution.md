@@ -10,7 +10,19 @@ The short version: **one service, two hostnames.**
 | Host | Surface | Who it is for |
 | --- | --- | --- |
 | `atheniq.institute` | public site, admissions, student portal | prospective students, applicants, enrolled students |
-| `registrar.atheniq.institute` | applications, account issuance, roster | the registrar and admissions staff |
+| `registrar.atheniq.institute` | console: applications, account issuance, roster, course catalog | the registrar and admissions staff |
+
+**One console.** This is the staff console, and it owns the catalog. The Next.js
+console in `upstream/atheniq-console` keeps awards, degree plans and the service
+routes the bridge calls, but it takes no registrar host and no longer authors
+courses: its `/courses` and `/generate` pages answer `308` here
+(`INSTITUTION_CONSOLE_URL`). Adding a second catalog editor was two answers to
+"what is this course", and the institution's answer is the one the portal
+registers against. One migration dependency comes with the cutover: the console's
+mobile app (`upstream/atheniq-console/mobile`) defaults to
+`https://registrar.atheniq.institute` for its API and privacy URL. Point
+`EXPO_PUBLIC_API_BASE` and `privacyPolicyUrl` at the console's own host (or at
+this service, once it serves those routes) before the registrar host moves.
 
 ## Who owns what
 
@@ -23,7 +35,7 @@ that may decide it. The institution extends the table rather than replacing it.
 | A person is admitted, and their student number | Institution registrar | the console receives the learner id `lrn_…` |
 | A student's portal account and password | Institution registry | the bridge never sees a password |
 | An `@atheniq.institute` address | Institution registry (reserved) → mail provider (delivered) | the portal displays its state |
-| Course catalog and teaching schedule | `content.ts` (this repo) → console catalog | the LMS receives an OLX package |
+| The Institute's course catalog and teaching schedule | Institution console (`src/catalog.ts`, `src/ai.ts`) | the public site, the portal and the LMS sync read it; the LMS serves the courseware; the Next.js console redirects its course pages here |
 | Registration for a term course | Institution registry | the LMS enrollment is the next sync |
 | Courseware, progress, gradebook | Open edX LMS | bridge writes completion and optional grade |
 | What an AI classroom observed | Bridge ledger | portal and console read it |
@@ -68,6 +80,99 @@ Admission is the only place a password is minted, and the plaintext is returned
 **once**, to the registrar, on the confirmation page. It is stored only as a
 scrypt hash. If that page is lost, the registrar issues a reset; nobody can
 recover the password, including the Institute.
+
+## The course catalog
+
+Courses are data, not code. The institution console's **Courses** section is the one writer of
+`$INSTITUTION_DATA_DIR/catalog.json`, and every surface reads it: the public
+program pages and the academic schedule, the student's registration page, the
+registrar's roster, and the LMS sync.
+
+- **Add, edit, remove.** A course record is the catalog entry, the registration
+  rules and the LMS runtime key in one. The code (`AI101`) and term (`2027A`)
+  produce `course-v1:AthenIQ+AI101+2027A`. A code is not editable: removing and
+  re-adding is the honest way to change one, because enrollment and classroom
+  records name it.
+- **A removal is refused while enrollments exist.** Archive the course instead;
+  a delete that orphans a student's record is worse than a catalog that keeps a
+  retired course.
+- **Draft versus published.** Only a published course is listed for students and
+  open for registration. A draft is a registrar's working record.
+- **The seed is `content.ts`.** A new data directory materialises the published
+  curriculum on first boot, so the public site never points at an empty catalog.
+  After that the file is the source of truth.
+
+### Generated with AI
+
+`/courses/generate` turns a sentence into a complete draft: title, summary,
+description, outcomes, prerequisites, audience, 3–6 modules with typed lessons
+and minutes, an assessment per module, and a grading mix that must sum to 100%.
+Two engines, one contract:
+
+- **The model gateway** — `OMNIROUTE_BASE_URL`, `OMNIROUTE_MODEL`,
+  `OMNIROUTE_API_KEY` (server-side only, never in a view or the browser). The
+  reply is coerced back into the draft schema, so a malformed answer cannot
+  reach the catalog.
+- **The curriculum rules** — deterministic and dependency-free, used when no key
+  is configured or the gateway fails. The preview says which engine wrote the
+draft.
+
+Nothing is saved until a registrar accepts the draft. Acceptance writes a normal
+course record with `source: "ai"`, so it is edited and published exactly like a
+hand-authored one.
+
+### In sync with atheniq.courses
+
+`POST /courses/sync` reads the LMS public catalog
+(`GET /api/courses/v1/courses/`, no token) and matches by course code. The
+console then shows, per course, whether the LMS serves it, and separately lists
+courses the LMS serves that the catalog does not hold, with an **Import** action
+that creates a local draft. A failed check records the reason and keeps the last
+good picture; it never blanks the page.
+
+The sync is read-only. Pushing a generated OLX package into the LMS belongs to
+the Next.js console's publish pipeline (it still builds and pushes the OLX
+bundle); this service reports the drift rather than pretending a course was
+pushed.
+
+### The embedded classroom
+
+A course's **AI classroom** page starts (once) and embeds an OpenMAIC classroom
+for that course, signed with a 15-minute instructor token issued by the bridge.
+It needs `ATHENIQ_BRIDGE_URL`, `ATHENIQ_BRIDGE_SERVICE_TOKEN` and
+`OPENMAIC_PUBLIC_URL`; without them the page says embedding is not configured.
+For the iframe to carry the HttpOnly `atheniq_classroom` cookie, the console and
+OpenMAIC must be same-site: set `ATHENIQ_CLASSROOM_COOKIE_DOMAIN` to the shared
+parent domain in production (or run both on the same host in development). The
+page's CSP allows exactly that one frame origin.
+
+On the real hosts that pair is:
+
+| Role | Host | Serves |
+| --- | --- | --- |
+| Console | `registrar.atheniq.institute` | this service, port 8080 |
+| Classroom | `classroom.atheniq.institute` | OpenMAIC, reached by the browser |
+| Bridge | internal (`http://bridge:8787`) | never published; the console calls it server-side |
+
+`classroom.atheniq.institute` is under the same registrable domain as the
+registrar, which is why the cookie works there: set
+`ATHENIQ_CLASSROOM_COOKIE_DOMAIN=.atheniq.institute`, `COOKIE_SECURE=true` and
+`OPENMAIC_PUBLIC_URL=https://classroom.atheniq.institute` on the institution, and
+the same `BRIDGE_JWT_SECRET` as `ATHENIQ_BRIDGE_JWT_SECRET` on OpenMAIC. The
+classroom host in use today, `class.atheniq.courses`, is a different registrable
+domain and sits behind Authentik; a cookie set by the registrar cannot reach it,
+so it cannot serve this embed.
+
+Proof, in order: sign in at the registrar, open a course's **AI classroom**,
+press **Start classroom** (the bridge creates it), then **Sign in to classroom**.
+`docs/cutover.md` has the same proof as commands for both real hosts.
+The response sets `atheniq_classroom` with `Domain=.atheniq.institute; Secure;
+HttpOnly; SameSite=Lax`, and the iframe at `classroom.atheniq.institute` renders
+the room as the registrar's identity instead of asking for a sign-in. Until the
+generator has named a stage, the page embeds the classroom host itself — the same
+signed-in owner's library — so the cookie is exercised before a stage exists. A sign-in
+wall inside the frame means the cookie did not cross: compare the two hostnames,
+the cookie's `Domain`, and that both are HTTPS.
 
 ## Accounts and the `@MAIL_DOMAIN` address
 
@@ -195,7 +300,27 @@ atheniq.institute {
 registrar.atheniq.institute {
   reverse_proxy institution:8080
 }
+
+classroom.atheniq.institute {
+  reverse_proxy openmaic:3000
+}
 ```
+
+`classroom` must be same-site with `registrar` for the embedded classroom (see
+above); the bridge stays internal and needs no hostname. The Next.js console
+(`upstream/atheniq-console`) is the records and awards service and takes no
+registrar host; if its own UI needs one, give it a separate name such as
+`console.atheniq.institute`.
+
+OpenMAIC also refuses framing it was not built to allow: without
+`ALLOWED_FRAME_ANCESTORS=https://registrar.atheniq.institute` its build-time CSP
+says `frame-ancestors 'self'` and sends `X-Frame-Options: SAMEORIGIN`, so the
+registrar's iframe is blocked however correct the cookie is. Compose passes
+`OPENMAIC_FRAME_ANCESTORS` as that build argument, and a restart does not change
+it — the image has to be rebuilt.
+
+The ordered version of this cutover — the DNS records, the two vhosts, the ports
+the edge forwards to, and how each step is proven — is `docs/cutover.md`.
 
 If another proxy sits in front, it must pass `Host` through, not rewrite it to
 the container name. Only set `TRUST_PROXY=true` when `X-Forwarded-Host` is set by
@@ -254,8 +379,9 @@ MFA for staff, and a documented retention schedule.
   registrar reconciles before teaching begins.
 - **Document upload and interview scheduling.** Admissions is a form, a
   conversation and a decision. Files and calendars are provider-shaped problems.
-- **A CMS.** Programs and courses live in `content.ts` and change by pull
-  request, which is deliberate while the catalog is small.
+- **A CMS for programs.** Programs, terms and faculty still live in
+  `content.ts` and change by pull request. Courses do not: they are catalog
+  records the console edits, described above.
 - **Accreditation.** The public site says plainly that the Institute is new and
   does not yet hold accreditation. Do not replace that sentence with a logo.
 
@@ -310,10 +436,13 @@ MFA for staff, and a documented retention schedule.
     by program, and award verification counts. No third-party tag without a
     consent decision.
 
-## Content is not configuration
+## Content is not configuration — except courses
 
-Programs, courses, terms, faculty and the admissions calendar live in
-`apps/institution/src/content.ts`. A change to what the Institute teaches is a
-reviewed pull request, not a database edit. When the catalog outgrows that —
-more than a few dozen courses, or multiple faculties editing concurrently — move
-it to a CMS or the console's catalog, and keep the same shapes.
+Programs, terms, faculty and the admissions calendar live in
+`apps/institution/src/content.ts`, and a change to them is a reviewed pull
+request. Courses moved: their record is `catalog.json`, written by the institution
+console, because a registrar adding a section or correcting credits is an operational
+act, not a code change. `content.ts` keeps the seed curriculum and the program
+plans. If programs outgrow the file for the same reasons, move them behind the
+same pattern — an atomic store with one writer and a validation layer — rather
+than editing a TypeScript file between terms.

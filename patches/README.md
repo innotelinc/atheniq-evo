@@ -35,6 +35,27 @@ inside `lib/server/identity/host/`.
 | `app/api/classrooms/launch/route.ts` | **new** — portal session + access check → bridge ticket → HttpOnly cookie → redirect. |
 | `app/portal/page.tsx` | adds *AI classroom* beside *Open course* when a bridge is configured. |
 
+## atheniq-console/0002-institution-owns-the-course-catalog.patch
+
+| File | Change |
+| --- | --- |
+| `README.md` | says what the app now is — records and awards — and that adding, editing, generating and removing a course belongs to the institution console at the registrar host. |
+| `middleware.ts` | `/courses` and `/generate` answer `308` to `INSTITUTION_CONSOLE_URL` (default `https://registrar.atheniq.institute`), translated to the institution's paths: `/generate` → `/courses/generate`, a generation session or a course id → `/courses`, `/courses/{new,generate,sync,import}` unchanged. `/api/*` and the public site are untouched, so awards, the mobile API and the generated website keep working. |
+| `components/Nav.tsx` | the Teach group is removed; a *Course catalog* link (`${INSTITUTION_CONSOLE_URL}/courses`) replaces it. |
+| `app/layout.tsx` | passes that link from the environment, says *Records console* rather than *Registrar console*, and describes the app as awards rather than course authoring. |
+| `next.config.mjs` | exposes `INSTITUTION_CONSOLE_URL` through `env`, because Next inlines `process.env` for the middleware at build time and the edge runtime sees nothing else. |
+| `Dockerfile` | takes `INSTITUTION_CONSOLE_URL` as a build argument for the same reason: the value is baked into the middleware, so a runtime-only variable would be ignored. `docker-compose.yml` passes it as `build.args`. |
+
+One catalog, one writer: the institution console authors courses, and this app
+keeps awards, degree plans and the service routes the bridge calls.
+
+Two things to know before deploying it. **The redirect target is baked at build
+time** — changing `INSTITUTION_CONSOLE_URL` means rebuilding the image, not
+restarting the container. And **the institution must answer at
+`registrar.atheniq.institute` before this patch goes live there**: the default
+target is that host, so a console serving `/courses` on it would redirect to
+itself forever. `docs/cutover.md` is the ordered version of that.
+
 ## Verified against the pinned commit
 
 ```bash

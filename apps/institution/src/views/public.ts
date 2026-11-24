@@ -15,10 +15,10 @@ import {
   STATS,
   TERMS,
   TIMELINE,
-  courseByCode,
   intakeTerms,
   type Program,
 } from "../content.ts";
+import type { CatalogCourse } from "../catalog.ts";
 import type { Application } from "../store.ts";
 import type { ApplicationInput } from "../registry.ts";
 import {
@@ -29,6 +29,7 @@ import {
   layout,
   money,
   notice,
+  courseOf,
   pageHead,
   programCard,
   sectionHead,
@@ -226,9 +227,16 @@ export function home(ctx: UiContext): string {
   });
 }
 
-export function academics(ctx: UiContext): string {
+export function academics(ctx: UiContext, catalog: CatalogCourse[]): string {
   const curriculumCodes = [
-    ...new Set(PROGRAMS.flatMap((program) => program.curriculum.flatMap((block) => block.courses))),
+    ...new Set([
+      ...PROGRAMS.flatMap((program) => program.curriculum.flatMap((block) => block.courses)),
+      // A course the console attached to a program belongs in the schedule even
+      // when the program's written plan has not been edited yet.
+      ...catalog
+        .filter((course) => course.status === "published" && course.programs.length > 0)
+        .map((course) => course.code),
+    ]),
   ];
 
   const body = `
@@ -260,9 +268,9 @@ export function academics(ctx: UiContext): string {
       })}
       ${TERMS.map((term) => {
         const courses = curriculumCodes
-          .map((code) => courseByCode(code))
+          .map((code) => courseOf(catalog, code))
           .filter((course): course is NonNullable<typeof course> => Boolean(course))
-          .filter((course) => course.termId === term.id);
+          .filter((course) => course.termId === term.id && course.status !== "archived");
         if (courses.length === 0) return "";
         return `<div class="term-block">
           <div class="term-block__head">
@@ -302,7 +310,7 @@ export function academics(ctx: UiContext): string {
   return layout({ title: "Academics", surface: "public", active: "academics", ctx, body });
 }
 
-export function programPage(ctx: UiContext, program: Program): string {
+export function programPage(ctx: UiContext, program: Program, catalog: CatalogCourse[]): string {
   const curriculum = program.curriculum
     .map(
       (block) => `<div class="term-block">
@@ -313,8 +321,8 @@ export function programPage(ctx: UiContext, program: Program): string {
             <tbody>
               ${block.courses
                 .map((code) => {
-                  const course = courseByCode(code);
-                  if (!course) return "";
+                  const course = courseOf(catalog, code);
+                  if (!course || course.status === "archived") return "";
                   return `<tr>
                     <td class="num">${esc(course.code)}</td>
                     <td><span class="strong">${esc(course.title)}</span><span class="table__sub">${esc(course.summary)}</span></td>

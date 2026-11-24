@@ -8,6 +8,7 @@
  */
 
 import { ConfigError, describeConfig, loadConfig, type InstitutionConfig } from "./config.ts";
+import { Catalog, CatalogError } from "./catalog.ts";
 import { Store, StoreError } from "./store.ts";
 import { Registry } from "./registry.ts";
 import { createMailer } from "./mail.ts";
@@ -35,7 +36,14 @@ async function main(): Promise<void> {
     fail(error instanceof StoreError ? error.message : String(error));
   }
 
-  const registry = new Registry(store, config);
+  let catalog: Catalog;
+  try {
+    catalog = Catalog.open(config.dataDir);
+  } catch (error) {
+    fail(error instanceof CatalogError ? error.message : String(error));
+  }
+
+  const registry = new Registry(store, config, catalog);
   const mailer = createMailer(config);
   if (mailer) {
     try {
@@ -56,6 +64,8 @@ async function main(): Promise<void> {
     console.log(`  public     ${config.publicOrigin}`);
     console.log(`  registrar  ${config.registrarOrigin}`);
     console.log(`  config     ${JSON.stringify(describeConfig(config))}`);
+    const counts = catalog.summary();
+    console.log(`  catalog    ${counts.courses} courses (${counts.published} published, ${counts.draft} draft)`);
     if (config.seedDemo) console.log("  data       demonstration records seeded (INSTITUTION_SEED_DEMO)");
   });
 

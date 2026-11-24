@@ -235,11 +235,13 @@ Preview credentials when `INSTITUTION_SEED_DEMO=true`:
 | Student portal | `nadia.rahman@atheniq.institute` | `atheniq-demo` |
 | Registrar | `registrar@atheniq.institute` | `REGISTRAR_PASSWORD` |
 
-### 7. Console (optional)
+### 7. Records console (optional — awards, no course authoring)
 
-The AthenIQ console is a separate Next.js app, not the institution's registrar
-page. If `upstream/atheniq-console` is missing, `bash scripts/bootstrap.sh`
-fetches the pinned upstreams. It needs its own dependencies and first boot:
+The Next.js console is the records and awards service: degree plans, Signara
+awards and the routes the bridge calls. It is not the staff console and it takes
+no registrar host — course authoring is the institution's `/courses` section. If
+`upstream/atheniq-console` is missing, `bash scripts/bootstrap.sh` fetches the
+pinned upstreams. It needs its own dependencies and first boot:
 
 ```bash
 cd upstream/atheniq-console
@@ -251,6 +253,7 @@ AUTH_NAME=Registrar \
 AUTH_REQUIRE_2FA=off \
 ATHENIQ_BRIDGE_SERVICE_TOKEN="$BRIDGE_SERVICE_TOKEN" \
 CONSOLE_ORIGIN=http://localhost:3100 \
+INSTITUTION_CONSOLE_URL=http://registrar.localhost:8080 \
 npm run dev
 ```
 
@@ -259,11 +262,20 @@ It answers at `http://localhost:3100/login`. The first boot seeds
 `AUTH_PASSWORD`. `AUTH_REQUIRE_2FA=on` is the production default; the local
 example turns it off so the first sign-in does not need an authenticator.
 
+Its `/courses` and `/generate` pages answer `308` to `INSTITUTION_CONSOLE_URL`,
+so that value must be the institution console the browser can reach
+(`http://registrar.localhost:8080` locally,
+`https://registrar.atheniq.institute` in production). Next inlines it at build
+time, so in a container it is a build argument, not a runtime variable:
+`docker compose build console` after changing it, not a restart. `dev` reads it
+on each start.
+
 The institution portal's "Console" link appears only when `CONSOLE_BASE_URL` is
 set, and it must be a URL the browser can reach — `http://localhost:3100`
-locally, a public console hostname in production. Do not give it the Compose
-service name `http://console:3100`; that only resolves inside the Compose
-network.
+locally, a separate public console hostname in production. It opens the awards
+and degree-record pages; it is not where courses are edited. Do not give it the
+Compose service name `http://console:3100`; that only resolves inside the
+Compose network.
 
 ### 8. Smoke test, in one pass
 
@@ -342,7 +354,12 @@ The three patched services and the bridge form a chain of trust:
 
 1. **Bridge** first. It accepts the old token version (same `CONTRACT_VERSION`)
    and old callbacks, so nothing breaks while it rolls.
-2. **OpenMAIC**, then **console**, then the edge config.
+2. **OpenMAIC**, then **console**, then the edge config. Two of those values are
+   build-time: OpenMAIC's `ALLOWED_FRAME_ANCESTORS` (its CSP) and the console's
+   `INSTITUTION_CONSOLE_URL` (its redirect). Rebuild the image when either
+   changes, and see `docs/cutover.md` before moving a hostname the console
+   redirects to — a console serving `/courses` on `registrar.atheniq.institute`
+   redirects to itself.
 3. If `CONTRACT_VERSION` changes, deploy the bridge last instead: the bridge bumps
    its version, and tokens minted by the old console are refused by the new
    OpenMAIC until the console catches up. A 15-minute token lifetime bounds that

@@ -29,6 +29,16 @@ export interface InstitutionConfig {
   bridgeToken: string;
   consoleUrl: string;
   credentialVerifyUrl: string;
+  /** The model gateway the course generator uses. The key is server-only. */
+  omnirouteUrl: string;
+  omnirouteModel: string;
+  omnirouteKey: string;
+  /** The LMS whose public catalog the console syncs against (`atheniq.courses`). */
+  lmsBaseUrl: string;
+  /** The browser-reachable OpenMAIC origin, for the embedded classroom. */
+  openmaicPublicUrl: string;
+  /** Parent domain that lets an iframe carry the classroom cookie. */
+  classroomCookieDomain: string;
   seedDemo: boolean;
   cookieSecure: boolean;
   trustProxy: boolean;
@@ -48,6 +58,23 @@ function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, allowZe
     throw new ConfigError(`${name} must be a ${allowZero ? "non-negative" : "positive"} integer`);
   }
   return parsed;
+}
+
+/** An optional origin: empty stays empty, anything else must be an http(s) URL. */
+function optionalOrigin(env: NodeJS.ProcessEnv, name: string): string {
+  const value = read(env, name).replace(/\/+$/, "");
+  if (!value) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ConfigError(`${name} must be an absolute http(s) URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new ConfigError(`${name} must be an absolute http(s) URL`);
+  }
+  // Keep the path: a model gateway base is commonly `https://host/v1`.
+  return parsed.toString().replace(/\/+$/, "");
 }
 
 function origin(env: NodeJS.ProcessEnv, name: string, fallback: string): string {
@@ -161,6 +188,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): InstitutionCon
     bridgeToken: read(env, "ATHENIQ_BRIDGE_SERVICE_TOKEN"),
     consoleUrl: read(env, "CONSOLE_BASE_URL").replace(/\/+$/, ""),
     credentialVerifyUrl: read(env, "CREDENTIAL_VERIFY_URL"),
+    omnirouteUrl: optionalOrigin(env, "OMNIROUTE_BASE_URL"),
+    omnirouteModel: read(env, "OMNIROUTE_MODEL", "auto/best-chat"),
+    omnirouteKey: read(env, "OMNIROUTE_API_KEY"),
+    lmsBaseUrl: optionalOrigin(env, "LMS_BASE_URL"),
+    openmaicPublicUrl: optionalOrigin(env, "OPENMAIC_PUBLIC_URL"),
+    classroomCookieDomain: read(env, "ATHENIQ_CLASSROOM_COOKIE_DOMAIN", read(env, "CLASSROOM_COOKIE_DOMAIN")),
+
     seedDemo,
     cookieSecure,
     trustProxy: bool(env, "TRUST_PROXY", false),
@@ -182,6 +216,10 @@ export function describeConfig(config: InstitutionConfig): Record<string, string
     bridge: config.bridgeUrl || "not configured",
     bridgeToken: Boolean(config.bridgeToken),
     console: config.consoleUrl || "not configured",
+    gateway: config.omnirouteUrl ? config.omnirouteModel : "not configured",
+    gatewayKey: Boolean(config.omnirouteKey),
+    lms: config.lmsBaseUrl || "not configured",
+    classroom: config.openmaicPublicUrl || "not configured",
     seedDemo: config.seedDemo,
     cookieSecure: config.cookieSecure,
   };

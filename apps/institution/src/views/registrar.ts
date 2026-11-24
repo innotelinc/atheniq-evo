@@ -7,10 +7,12 @@
  * the Faculty Board; this surface does not pretend to own them.
  */
 
-import { courseByCode, programBySlug, termById } from "../content.ts";
+import type { CatalogCourse } from "../catalog.ts";
+import { programBySlug, termById } from "../content.ts";
 import type { RegistrySummary } from "../registry.ts";
 import type { Application, Enrollment, Student } from "../store.ts";
 import {
+  courseOf,
   dateLabel,
   emptyState,
   esc,
@@ -32,21 +34,21 @@ export function signIn(ctx: UiContext, state: { error?: string; email?: string }
   <div class="auth">
     <aside class="auth__aside">
       <div>
-        <p class="eyebrow">Registrar</p>
-        <h2>Admissions, accounts and the student record.</h2>
-        <p>One decision admits an applicant, issues a student number, creates a portal account and reserves an <strong>@${esc(ctx.mailDomain)}</strong> address. All of it is one write.</p>
+        <p class="eyebrow">AthenIQ console</p>
+        <h2>Admissions, the roster and the course catalog.</h2>
+        <p>One decision admits an applicant, issues a student number, creates a portal account and reserves an <strong>@${esc(ctx.mailDomain)}</strong> address. All of it is one write — and the courses they register for are the same records this console edits.</p>
       </div>
       <ul class="auth__list">
         <li>Read and decide applications.</li>
         <li>Issue and reset student access.</li>
-        <li>See registrations and mailbox state.</li>
-        <li>Hand academic awards to the console.</li>
+        <li>Add, edit and retire courses.</li>
+        <li>Generate a course with AI and open its classroom.</li>
       </ul>
     </aside>
     <div class="auth__main">
       <div class="auth__form">
         <p class="eyebrow">Staff sign-in</p>
-        <h1>Registrar</h1>
+        <h1>Console</h1>
         <p>This surface is separate from the student portal and is not linked from it.</p>
         ${state.error ? notice("error", state.error) : ""}
         <form method="post" action="/signin">
@@ -64,7 +66,7 @@ export function signIn(ctx: UiContext, state: { error?: string; email?: string }
     </div>
   </div>`;
 
-  return layout({ title: "Registrar sign-in", surface: "registrar", viewer: null, ctx, body, description: "AthenIQ Institute registrar." });
+  return layout({ title: "Console sign-in", surface: "registrar", viewer: null, ctx, body, description: "AthenIQ console." });
 }
 
 export function dashboard(
@@ -72,18 +74,19 @@ export function dashboard(
   summary: RegistrySummary,
   applications: Application[],
   students: Student[],
+  catalog: { courses: number; published: number; draft: number; live: number },
 ): string {
   const recent = applications.slice(0, 5);
   const body = `
   ${pageHead({
-    eyebrow: "Registrar",
+    eyebrow: "Console",
     title: "Today at the Institute.",
-    lede: "The admissions queue, the student roster and the state of account issuance. Everything here is scoped to this institution; nothing is shared with the public site.",
+    lede: "The admissions queue, the roster, the catalog and the state of account issuance. Everything here is scoped to this institution; nothing is shared with the public site.",
     facts: [
       { label: "Awaiting decision", value: String(summary.awaitingDecision) },
       { label: "Students", value: String(summary.students) },
-      { label: "Registrations", value: String(summary.registrations) },
-      { label: "Mailboxes reserved", value: String(summary.mailboxesReserved) },
+      { label: "Courses", value: String(catalog.courses) },
+      { label: "Live on the LMS", value: String(catalog.live) },
     ],
   })}
 
@@ -93,7 +96,7 @@ export function dashboard(
         ${metric(String(summary.awaitingDecision), "awaiting a decision")}
         ${metric(String(summary.students), "students on the roster")}
         ${metric(String(summary.registrations), "open registrations")}
-        ${metric(String(summary.mailboxesReserved), "mailboxes awaiting activation")}
+        ${metric(String(catalog.courses), "courses in the catalog")}
       </div>
       <div class="split">
         <div>
@@ -137,6 +140,7 @@ export function dashboard(
           </dl>
           <p class="form-note">The temporary password is displayed once, on the admission confirmation. It cannot be recovered; issue a reset instead.</p>
           <a class="button button--ghost" href="/students">Open the roster</a>
+          <a class="textlink mt-6" href="/courses">Courses — ${catalog.published} published, ${catalog.draft} draft</a>
         </aside>
       </div>
     </div>
@@ -173,7 +177,7 @@ export function dashboard(
     </div>
   </section>`;
 
-  return layout({ title: "Registrar", surface: "registrar", active: "dashboard", viewer: staffViewer(ctx.demo ? `registrar@${ctx.mailDomain}` : "Staff"), ctx, body });
+  return layout({ title: "Overview", surface: "registrar", active: "dashboard", viewer: staffViewer(ctx.demo ? `registrar@${ctx.mailDomain}` : "Staff"), ctx, body });
 }
 
 export function applications(ctx: UiContext, list: Application[]): string {
@@ -372,6 +376,7 @@ export function studentDetail(
   ctx: UiContext,
   student: Student,
   enrollments: Enrollment[],
+  courses: CatalogCourse[],
   state: { error?: string; notice?: string; tempPassword?: string } = {},
 ): string {
   const program = programBySlug(student.programSlug);
@@ -431,9 +436,9 @@ export function studentDetail(
                   ${enrollments
                     .map(
                       (enrollment) => `<tr>
-                        <td><span class="strong">${esc(courseByCode(enrollment.courseCode)?.title ?? enrollment.courseCode)}</span><span class="table__sub">${esc(enrollment.courseCode)}</span></td>
+                        <td><span class="strong">${esc(courseOf(courses, enrollment.courseCode)?.title ?? enrollment.courseCode)}</span><span class="table__sub">${esc(enrollment.courseCode)}</span></td>
                         <td>${esc(termById(enrollment.termId)?.name ?? enrollment.termId)}</td>
-                        <td class="num">${courseByCode(enrollment.courseCode)?.credits ?? 0}</td>
+                        <td class="num">${courseOf(courses, enrollment.courseCode)?.credits ?? 0}</td>
                         <td>${esc(dateLabel(enrollment.registeredAt))}</td>
                         <td>${statusBadge(enrollment.status)}</td>
                       </tr>`,
