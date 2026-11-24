@@ -17,6 +17,13 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+
+      # check:compose asserts that the env_file Compose mounts holds literal
+      # values, and a checkout has no .env (it is gitignored). The template is
+      # literal throughout, so it is enough for the guard.
+      - name: Write a literal .env
+        run: cp .env.example .env
+
       - run: npm ci
       - run: npm run check
 
@@ -147,6 +154,7 @@ jobs:
             --publish 8080:8080 \
             --env SESSION_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')" \
             --env REGISTRAR_PASSWORD=ci-registrar-password \
+            --env REGISTRAR_EMAIL=registrar@ci.example \
             --env COOKIE_SECURE=true \
             atheniq-institution:ci
 
