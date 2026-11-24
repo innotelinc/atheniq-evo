@@ -10,18 +10,25 @@
 #   bash scripts/bootstrap.sh            # fetch + patch
 #   bash scripts/bootstrap.sh --fetch    # fetch only
 #   bash scripts/bootstrap.sh --check    # verify patches still apply, change nothing
+#   bash scripts/bootstrap.sh --only OpenMAIC   # one upstream, for a single image
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 MODE="all"
-case "${1:-}" in
-  --fetch) MODE="fetch" ;;
-  --check) MODE="check" ;;
-  "") ;;
-  *) echo "usage: $0 [--fetch|--check]" >&2; exit 2 ;;
-esac
+ONLY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fetch) MODE="fetch" ;;
+    --check) MODE="check" ;;
+    --only) shift; ONLY="${1:-}" ;;
+    --only=*) ONLY="${1#--only=}" ;;
+    "") ;;
+    *) echo "usage: $0 [--fetch|--check] [--only NAME]" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
@@ -31,6 +38,12 @@ LOCK="$(node -e '
 const lock = require("./upstream.lock.json");
 for (const u of lock.upstreams) console.log([u.name, u.path, u.repo, u.commit].join("\t"));
 ')"
+
+# One image does not need the other three clones: Open edX alone is a monolith.
+if [ -n "$ONLY" ]; then
+  LOCK="$(printf '%s\n' "$LOCK" | awk -F'\t' -v name="$ONLY" '$1 == name')"
+  [ -n "$LOCK" ] || { echo "no upstream named $ONLY in upstream.lock.json" >&2; exit 2; }
+fi
 
 fetch_one() {
   local name="$1" path="$2" repo="$3" commit="$4"
