@@ -157,7 +157,7 @@ vendor. `upstream.lock.json` pins what the patches were generated against, and
 | **OpenMAIC** | `app/api/atheniq/completion` reports a finished classroom with an HMAC-signed callback; `components/atheniq/atheniq-completion-reporter.tsx` is the one control it renders. | Completion has to leave the classroom and reach the record of record. Identity and course come from the signed token, so a browser cannot claim another learner's completion. |
 | **atheniq-console** | `lib/award.ts` extracts the award logic that was the body of `POST /api/credentials`; both the registrar UI and the new service route use it. | One implementation of eligibility, evidence hashing and the Signara flow — the thing least affordable to have two of. |
 | **atheniq-console** | `app/api/internal/atheniq` (service-token), `app/api/classrooms/launch` (portal → bridge → cookie → redirect), and an *AI classroom* button in the portal. | The console is the only thing a learner signs into; it should be the only thing they press. |
-| **atheniq-console** | `middleware.ts` answers `308` for `/courses` and `/generate` to the institution console, translated to its paths (`/generate` → `/courses/generate`); `components/Nav.tsx` links there instead of listing them; `next.config.mjs` and the `Dockerfile` carry `INSTITUTION_CONSOLE_URL`, which Next inlines at build time. | Course authoring has one owner. The console keeps awards and degree plans, not a second catalog. |
+| **atheniq-console** | `middleware.ts` answers `308` for `/courses` and `/generate` to the institution console, translated to its paths (`/generate` → `/courses/generate`); `components/Nav.tsx` links there instead of listing them; `app/page.tsx`'s course CTAs — new course, generate, a course's editor — point there directly and take no hop; `next.config.mjs` and the `Dockerfile` carry `INSTITUTION_CONSOLE_URL`, which Next inlines at build time. | Course authoring has one owner. The console keeps awards and degree plans, not a second catalog. |
 | **Open edX** | No source patch. `deploy/openedx/` adds the settings the estate needs (`WRITABLE_GRADEBOOK`, completion tracking, trusted origins) and a script that creates the bridge's service user. | The LMS already exposes the two endpoints the bridge writes to. Forking Django views would be a maintenance cost with no benefit. |
 | **Signara** | No source patch. The console already speaks its document + signature + certificate API; `deploy/signara/` adds the estate's API settings. | Signing is Signara's job, and the console is the issuer of record. |
 
@@ -206,7 +206,11 @@ Run: `npm run check`.
   and the `atheniq_classroom` cookie on `.atheniq.institute`, and Chromium
   refuses it when framed by a host the policy does not name. That run mapped the
   public names to the local stack, so it proves the image and the frame, not the
-  edge in front of them.
+  edge in front of them. Compose carries the same value as a build argument by
+  default (`docker compose config` shows `ALLOWED_FRAME_ANCESTORS:
+  https://registrar.atheniq.institute` with the variable unset), though that build
+  did not reach an image on this workstation: the Docker engine died during
+  `next build` on a 3.9 GB VM, which `docs/cutover.md` records.
 - **Live gateway**: the bridge's `/health` against the real OmniRoute answered
   `ok` with the model catalog, so the configured key and base URL work.
 

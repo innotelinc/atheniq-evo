@@ -92,6 +92,98 @@ index c9a0dd5..b530b88 100644
                  </>
                )}
              </div>
+diff --git a/app/page.tsx b/app/page.tsx
+index a9f34d1..8fc7d9c 100644
+--- a/app/page.tsx
++++ b/app/page.tsx
+@@ -11,6 +11,11 @@ export default function DashboardPage() {
+   const db = getDb();
+   const settings = db.settings;
+ 
++  // The catalog has one owner: the institution console. These links go straight
++  // there instead of through this app's 308, and they use the course code because
++  // that is what the institution addresses a course by.
++  const catalog = (process.env.INSTITUTION_CONSOLE_URL || "https://registrar.atheniq.institute").replace(/\/+$/, "");
++
+   const published = db.courses.filter((c) => c.status === "published");
+   const inFlight = db.courses.filter((c) => c.status === "draft" || c.status === "in_review");
+   const issued = db.credentials.filter((c) => c.status === "issued" || c.status === "signed");
+@@ -34,12 +39,12 @@ export default function DashboardPage() {
+           <Link className="btn small ghost" href="/website">
+             Website
+           </Link>
+-          <Link className="btn small" href="/generate">
++          <a className="btn small" href={`${catalog}/courses/generate`}>
+             Generate a course
+-          </Link>
+-          <Link className="btn primary small" href="/courses/new">
++          </a>
++          <a className="btn primary small" href={`${catalog}/courses/new`}>
+             New course
+-          </Link>
++          </a>
+         </div>
+       </Topbar>
+ 
+@@ -138,9 +143,9 @@ export default function DashboardPage() {
+               title="Needs a decision"
+               subtitle="Drafts finished but not published, and awards waiting on signing."
+               action={
+-                <Link className="btn small ghost" href="/courses?status=in_review">
++                <a className="btn small ghost" href={`${catalog}/courses`}>
+                   View all
+-                </Link>
++                </a>
+               }
+             >
+               {inFlight.length === 0 && needsSigning.length === 0 ? (
+@@ -148,9 +153,9 @@ export default function DashboardPage() {
+                   title="Nothing is waiting"
+                   body="Every course is published and every award is signed. Start a new course from an idea in the course studio."
+                   action={
+-                    <Link className="btn" href="/generate">
++                    <a className="btn" href={`${catalog}/courses/generate`}>
+                       Open course studio
+-                    </Link>
++                    </a>
+                   }
+                 />
+               ) : (
+@@ -158,18 +163,18 @@ export default function DashboardPage() {
+                   {inFlight.slice(0, 4).map((course) => (
+                     <div className="between" key={course.id}>
+                       <div>
+-                        <Link href={`/courses/${course.id}`} className="strong">
++                        <a href={`${catalog}/courses/${encodeURIComponent(course.code)}`} className="strong">
+                           {course.code} — {course.title.replace(`${course.code} — `, "")}
+-                        </Link>
++                        </a>
+                         <div className="small muted">
+                           {course.credits} credits · {course.modules.length} modules · updated {daysAgo(course.updatedAt)}
+                         </div>
+                       </div>
+                       <div className="row">
+                         <Badge status={course.status} />
+-                        <Link className="btn small" href={`/courses/${course.id}`}>
++                        <a className="btn small" href={`${catalog}/courses/${encodeURIComponent(course.code)}`}>
+                           Finish
+-                        </Link>
++                        </a>
+                       </div>
+                     </div>
+                   ))}
+@@ -293,9 +298,9 @@ export default function DashboardPage() {
+                   assessment mix — then you refine it by instruction until it is right, and accept it into the
+                   catalog.
+                 </p>
+-                <Link className="btn primary block" href="/generate">
++                <a className="btn primary block" href={`${catalog}/courses/generate`}>
+                   Generate from an idea
+-                </Link>
++                </a>
+                 <span className="tiny muted">Signed-in staff only · every revision is versioned</span>
+               </div>
+             </Card>
 diff --git a/components/Nav.tsx b/components/Nav.tsx
 index 9776100..29e98ee 100644
 --- a/components/Nav.tsx

@@ -42,12 +42,15 @@ inside `lib/server/identity/host/`.
 | `README.md` | says what the app now is — records and awards — and that adding, editing, generating and removing a course belongs to the institution console at the registrar host. |
 | `middleware.ts` | `/courses` and `/generate` answer `308` to `INSTITUTION_CONSOLE_URL` (default `https://registrar.atheniq.institute`), translated to the institution's paths: `/generate` → `/courses/generate`, a generation session or a course id → `/courses`, `/courses/{new,generate,sync,import}` unchanged. `/api/*` and the public site are untouched, so awards, the mobile API and the generated website keep working. |
 | `components/Nav.tsx` | the Teach group is removed; a *Course catalog* link (`${INSTITUTION_CONSOLE_URL}/courses`) replaces it. |
+| `app/page.tsx` | the dashboard's course CTAs — *New course*, *Generate a course*, *Generate from an idea*, the in-review list and each course's *Finish* — link straight to the institution console (`/courses/new`, `/courses/generate`, `/courses/<code>`) instead of to this app's paths, which only answer `308`. Both apps address a course by its code, so the link survives the move. |
 | `app/layout.tsx` | passes that link from the environment, says *Records console* rather than *Registrar console*, and describes the app as awards rather than course authoring. |
 | `next.config.mjs` | exposes `INSTITUTION_CONSOLE_URL` through `env`, because Next inlines `process.env` for the middleware at build time and the edge runtime sees nothing else. |
 | `Dockerfile` | takes `INSTITUTION_CONSOLE_URL` as a build argument for the same reason: the value is baked into the middleware, so a runtime-only variable would be ignored. `docker-compose.yml` passes it as `build.args`. |
 
 One catalog, one writer: the institution console authors courses, and this app
 keeps awards, degree plans and the service routes the bridge calls.
+The console's own dashboard links there directly, so the morning click-through
+does not pay for a redirect.
 
 Two things to know before deploying it. **The redirect target is baked at build
 time** — changing `INSTITUTION_CONSOLE_URL` means rebuilding the image, not

@@ -109,6 +109,21 @@ docker compose up -d
 docker compose ps
 ```
 
+The OpenMAIC build wants a few gigabytes of headroom: it compiles with
+`NODE_OPTIONS=--max-old-space-size=3072`. On an 8 GB Windows workstation whose
+Docker VM had 3.9 GB, `pnpm install` finished in 41 minutes and the engine then
+died during `next build` (`failed to receive status: rpc error: code =
+Unavailable ... EOF`), so raise Docker's memory well above that heap (6 GB is a
+workable floor) or build on i3 as above.
+
+It does not have to be built on either. The `openmaic image` workflow fetches
+OpenMAIC at the pinned commit (`scripts/bootstrap.sh --only OpenMAIC`), builds it
+with the registrar origin, asserts the `frame-ancestors` line on the running
+container, and publishes `ghcr.io/innotelinc/atheniq-evo-openmaic` as `latest` and
+`sha-<commit>`. A workstation can then pull that image instead of compiling, or
+load the run's artifact (`gh run download <run> --name openmaic-image`, then
+`docker load`).
+
 Prove each surface by hostname against loopback — this is the check that matters
 before a proxy can confuse you:
 
