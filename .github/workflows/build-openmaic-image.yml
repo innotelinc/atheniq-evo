@@ -110,20 +110,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Publishing needs the account to allow it: a token granted packages: write
+      # still gets `error from registry: denied` on the manifest when the
+      # repository's workflow permissions are read-only, and that is an account
+      # setting, not something this file can repair. The artifact below is the
+      # path that always works, so a refused publish is reported, not fatal.
       - name: Publish
+        id: publish
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         run: |
           docker tag openmaic:csp "$IMAGE:sha-${GITHUB_SHA:0:12}"
           docker tag openmaic:csp "$IMAGE:latest"
           docker push "$IMAGE:sha-${GITHUB_SHA:0:12}"
           docker push "$IMAGE:latest"
 
+      - name: Report a refused publish
+        if: steps.publish.outcome == 'failure'
+        run: |
+          echo "::warning title=Not published to GHCR::The registry refused the manifest; the image is in the openmaic-image artifact. Allow packages write in Settings → Actions → Workflow permissions to publish."
+
       # A workstation that cannot authenticate to a private package still gets
       # the exact bytes: `gh run download <run> --name openmaic-image`.
       - name: Save the image for a local pull
+        if: always()
         run: docker save openmaic:csp | gzip -1 > openmaic-image.tar.gz
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: openmaic-image
           path: openmaic-image.tar.gz
