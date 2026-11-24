@@ -121,16 +121,27 @@ OpenMAIC at the pinned commit (`scripts/bootstrap.sh --only OpenMAIC`), builds i
 with the frame origin `docker compose config` resolves — `OPENMAIC_FRAME_ANCESTORS`
 from `.env`, `https://registrar.atheniq.institute` by default — so the image and
 the assertion cannot disagree with what Compose ships. It asserts the
-`frame-ancestors` line on the running container, and publishes
-`ghcr.io/innotelinc/atheniq-evo-openmaic` as `latest` and `sha-<commit>`. A workstation can then pull that image instead of compiling, or
-load the run's artifact (`gh run download <run> --name openmaic-image`, then
-`docker load`).
+`frame-ancestors` line on the running container, and publishes the image under
+both `latest` and `sha-<commit>` in two places:
+`ghcr.io/innotelinc/atheniq-evo-openmaic` and the public
+`docker.io/innotel/atheniq-evo-openmaic`. A workstation can then pull instead of
+compiling:
 
-Publishing works from the run, but pulling that package back needs
-`read:packages`: this account's token carries `repo` and `workflow` only, so a
-workstation's `docker pull ghcr.io/innotelinc/atheniq-evo-openmaic` answers
-`error from registry: denied`. Until that scope is granted, the artifact is the
-workstation's transport — it is saved whether or not the push lands.
+```bash
+docker pull docker.io/innotel/atheniq-evo-openmaic:latest
+docker pull docker.io/innotel/atheniq-evo-openmaic:sha-<first 12 of the commit>
+```
+
+The Docker Hub copy is public, so pulling it needs no credentials and no GitHub
+package scope. Pulling the GHCR package back does need `read:packages`, which
+this account's token does not carry (`repo` and `workflow` only), so
+`docker pull ghcr.io/innotelinc/atheniq-evo-openmaic` still answers
+`error from registry: denied` on a workstation; that push runs anyway, and the
+run's artifact (`gh run download <run> --name openmaic-image`, then `docker
+load`) remains a third way to move the bytes — it is saved whether or not either
+push lands. Docker Hub publishing reads the `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` repository secrets; with them unset the run warns and pushes
+to GHCR only.
 
 Prove each surface by hostname against loopback — this is the check that matters
 before a proxy can confuse you:

@@ -214,7 +214,10 @@ Run: `npm run check`.
   `https://registrar.atheniq.institute`) — and asserts the header on the running
   container. It
   answered `200` with `Content-Security-Policy: frame-ancestors 'self'
-  https://registrar.atheniq.institute` and no `X-Frame-Options`. The same build
+  https://registrar.atheniq.institute` and no `X-Frame-Options`. It publishes
+  that image to GHCR and to the public Docker Hub repository
+  `docker.io/innotel/atheniq-evo-openmaic` (`latest` and `sha-<commit>`), so a
+  workstation pulls it without a GitHub package scope. The same build
   never finished on this workstation — the Docker engine died during `next build`
   on a 3.9 GB VM, which `docs/cutover.md` records.
 - **Live gateway**: the bridge's `/health` against the real OmniRoute answered

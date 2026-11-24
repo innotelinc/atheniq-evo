@@ -149,6 +149,49 @@ jobs:
         if: always()
         run: docker logs openmaic-csp || true
 
+      # GHCR refuses a pull from a token without `read:packages` (this account's
+      # carries `repo` and `workflow` only; docs/cutover.md), so the image also
+      # goes to a public Docker Hub repository, which anyone can pull. The
+      # repository name is derived once here from DOCKERHUB_USERNAME, and both
+      # tags below use it, so a push cannot land somewhere the other did not.
+      # Unset secrets warn and skip rather than fail: GHCR and the artifact still
+      # carry the image, and a fork has no business holding a Hub token.
+      - name: Docker Hub repository
+        id: hub
+        if: github.event_name != 'pull_request'
+        env:
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$USERNAME" ] || [ -z "$TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Not published to Docker Hub::Set the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets to publish a public copy; this run only pushed to GHCR."
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "image=docker.io/${USERNAME}/atheniq-evo-openmaic" >> "$GITHUB_OUTPUT"
+          echo "docker hub: docker.io/${USERNAME}/atheniq-evo-openmaic"
+
+      - name: Sign in to Docker Hub
+        if: github.event_name != 'pull_request' && steps.hub.outputs.enabled == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Deliberately not continue-on-error: Docker Hub is the copy a workstation
+      # pulls without a registry scope, so a refusal has to fail the run instead
+      # of leaving `latest` quietly behind the commit.
+      - name: Publish to Docker Hub
+        if: github.event_name != 'pull_request' && steps.hub.outputs.enabled == 'true'
+        run: |
+          image="${{ steps.hub.outputs.image }}"
+          docker tag openmaic:csp "$image:sha-${GITHUB_SHA:0:12}"
+          docker tag openmaic:csp "$image:latest"
+          docker push "$image:sha-${GITHUB_SHA:0:12}"
+          docker push "$image:latest"
+          echo "pushed $image:sha-${GITHUB_SHA:0:12} and $image:latest"
+
       - name: Sign in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -175,7 +218,7 @@ jobs:
       - name: Report a refused publish
         if: steps.publish.outcome == 'failure'
         run: |
-          echo "::warning title=Not published to GHCR::The registry refused the manifest; the image is in the openmaic-image artifact. Allow packages write in Settings → Actions → Workflow permissions to publish."
+          echo "::warning title=Not published to GHCR::The registry refused the manifest; the image is in the openmaic-image artifact and, when the Docker Hub secrets are set, on Docker Hub. Allow packages write in Settings → Actions → Workflow permissions to publish here."
 
       # A workstation that cannot authenticate to a private package still gets
       # the exact bytes: `gh run download <run> --name openmaic-image`.
