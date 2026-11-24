@@ -118,9 +118,11 @@ workable floor) or build on i3 as above.
 
 It does not have to be built on either. The `openmaic image` workflow fetches
 OpenMAIC at the pinned commit (`scripts/bootstrap.sh --only OpenMAIC`), builds it
-with the registrar origin, asserts the `frame-ancestors` line on the running
-container, and publishes `ghcr.io/innotelinc/atheniq-evo-openmaic` as `latest` and
-`sha-<commit>`. A workstation can then pull that image instead of compiling, or
+with the frame origin `docker compose config` resolves — `OPENMAIC_FRAME_ANCESTORS`
+from `.env`, `https://registrar.atheniq.institute` by default — so the image and
+the assertion cannot disagree with what Compose ships. It asserts the
+`frame-ancestors` line on the running container, and publishes
+`ghcr.io/innotelinc/atheniq-evo-openmaic` as `latest` and `sha-<commit>`. A workstation can then pull that image instead of compiling, or
 load the run's artifact (`gh run download <run> --name openmaic-image`, then
 `docker load`).
 

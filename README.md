@@ -208,9 +208,11 @@ Run: `npm run check`.
   public names to the local stack, so it proves the image and the frame, not the
   edge in front of them. That image is now built in CI, not by hand: the
   `openmaic image` workflow fetches OpenMAIC at the pinned commit, builds it with
-  the registrar origin (the value Compose passes by default — `docker compose
-  config` shows `ALLOWED_FRAME_ANCESTORS: https://registrar.atheniq.institute`
-  with the variable unset), and asserts the header on the running container. It
+  the frame origin it reads back from `docker compose config` — the value Compose
+  ships, so CI cannot drift from the estate (with `OPENMAIC_FRAME_ANCESTORS`
+  unset, `ALLOWED_FRAME_ANCESTORS` resolves to
+  `https://registrar.atheniq.institute`) — and asserts the header on the running
+  container. It
   answered `200` with `Content-Security-Policy: frame-ancestors 'self'
   https://registrar.atheniq.institute` and no `X-Frame-Options`. The same build
   never finished on this workstation — the Docker engine died during `next build`

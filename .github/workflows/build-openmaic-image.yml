@@ -31,9 +31,6 @@ permissions:
 
 env:
   IMAGE: ghcr.io/innotelinc/atheniq-evo-openmaic
-  # docker-compose.yml's default for OPENMAIC_FRAME_ANCESTORS, spelled out here
-  # so the assertion below compares against the value the image was built with.
-  FRAME_ANCESTORS: https://registrar.atheniq.institute
 
 jobs:
   image:
@@ -57,6 +54,56 @@ jobs:
 
       - name: Fetch OpenMAIC at the pinned commit and apply the patches
         run: bash scripts/bootstrap.sh --only OpenMAIC
+
+      # `docker compose config` refuses to render while a `:?` variable is
+      # unset, and a checkout has no .env (it is gitignored). These values are
+      # throwaways: the file only has to interpolate, nothing is started here.
+      - name: Write a literal .env
+        run: |
+          node -e '
+          const fs = require("node:fs");
+          const crypto = require("node:crypto");
+          const values = {
+            BRIDGE_JWT_SECRET: crypto.randomBytes(32).toString("hex"),
+            BRIDGE_SERVICE_TOKEN: crypto.randomBytes(24).toString("hex"),
+            BRIDGE_HOOK_SECRET: crypto.randomBytes(24).toString("hex"),
+            POSTGRES_PASSWORD: crypto.randomBytes(16).toString("hex"),
+            SESSION_SECRET: crypto.randomBytes(32).toString("hex"),
+          };
+          const lines = fs.readFileSync(".env.example", "utf8").split(/\r?\n/);
+          const out = lines.map((line) => {
+            const match = /^([A-Z0-9_]+)=/.exec(line);
+            if (match && values[match[1]]) return `${match[1]}="${values[match[1]]}"`;
+            return line;
+          });
+          fs.writeFileSync(".env", `${out.join("\n")}\n`);
+          '
+
+      # The frame origin is Compose's, not this workflow's. Reading the build
+      # argument Compose resolves, and using it for both the build and the
+      # assertion, means a change to OPENMAIC_FRAME_ANCESTORS in .env — or to
+      # the default in docker-compose.yml — cannot leave CI proving a header
+      # the estate does not ship.
+      - name: Read the frame origin Compose ships
+        id: frame
+        run: |
+          docker compose config --format json > compose.resolved.json
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const resolved = JSON.parse(fs.readFileSync("compose.resolved.json", "utf8"));
+          const args = resolved.services?.openmaic?.build?.args ?? {};
+          const value = String(args.ALLOWED_FRAME_ANCESTORS ?? "").trim();
+          if (!value) {
+            console.error("compose: openmaic has no ALLOWED_FRAME_ANCESTORS build arg");
+            process.exit(1);
+          }
+          if (value.includes("${")) {
+            console.error(`compose: ALLOWED_FRAME_ANCESTORS is unresolved: ${value}`);
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_ENV, `FRAME_ANCESTORS=${value}\n`);
+          console.log(`compose: the image is built with frame-ancestors 'self' ${value}`);
+          NODE
 
       - name: Build the image with the registrar as an allowed ancestor
         run: |
