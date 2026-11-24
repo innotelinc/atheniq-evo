@@ -56,6 +56,18 @@ services:
       retries: 5
 
   openmaic:
+    # CI builds and proves this image (`.github/workflows/build-openmaic-image.yml`)
+    # and publishes it to Docker Hub, so `up` here pulls it instead of spending
+    # ~15 minutes compiling. With both `image` and `build`, Compose pulls first
+    # and only builds from source when the tag cannot be fetched.
+    #
+    # The published image carries the frame origin CI resolved: the
+    # OPENMAIC_FRAME_ANCESTORS of .env.example, `https://registrar.atheniq.institute`.
+    # A different ancestor has to be compiled here, and that local build must then
+    # be started without pulling over it:
+    #   OPENMAIC_FRAME_ANCESTORS=https://example.org docker compose build openmaic
+    #   docker compose up -d --pull never openmaic
+    image: "${OPENMAIC_IMAGE:-docker.io/innotel/atheniq-evo-openmaic:latest}"
     build:
       context: ./upstream/OpenMAIC
       args:

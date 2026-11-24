@@ -217,7 +217,9 @@ Run: `npm run check`.
   https://registrar.atheniq.institute` and no `X-Frame-Options`. It publishes
   that image to GHCR and to the public Docker Hub repository
   `docker.io/innotel/atheniq-evo-openmaic` (`latest` and `sha-<commit>`), so a
-  workstation pulls it without a GitHub package scope. The same build
+  workstation pulls it without a GitHub package scope. `docker compose up` uses
+  that image rather than compiling: the service names it as
+  `OPENMAIC_IMAGE`, so a plain `up` is a pull plus a start. The same build
   never finished on this workstation — the Docker engine died during `next build`
   on a 3.9 GB VM, which `docs/cutover.md` records.
 - **Live gateway**: the bridge's `/health` against the real OmniRoute answered

@@ -97,26 +97,33 @@ The three secrets are generated, not chosen (`openssl rand -hex 32`, `-hex 24`,
 **Two values are baked into images at build time.** OpenMAIC's CSP
 (`ALLOWED_FRAME_ANCESTORS`) and the console's redirect target
 (`INSTITUTION_CONSOLE_URL`) are read by `next build`, not at runtime. A restart
-will not change either; `docker compose build openmaic console` will.
+will not change either. The classroom's is baked by CI into the image Compose
+pulls, from the value `docker compose config` resolves out of `.env.example`
+(`https://registrar.atheniq.institute`), so **a different ancestor is the one case
+that still compiles here**: `OPENMAIC_FRAME_ANCESTORS=… docker compose build
+openmaic`, then `docker compose up -d --pull never openmaic` (a plain `up` pulls
+first and would replace the local build with the published one). The console is
+always built here: `docker compose build console`.
 
 ## 1. Bring the stack up, before any edge change
 
 ```bash
 cd /srv/atheniq-evo            # wherever the repository lives on i3
 bash scripts/bootstrap.sh      # fetches upstream/ at the pinned commits and patches it
-docker compose build           # OpenMAIC's build takes ~15 minutes and needs the heap
+docker compose pull openmaic   # the image CI built and proved; no compile here
 docker compose up -d
 docker compose ps
 ```
 
-The OpenMAIC build wants a few gigabytes of headroom: it compiles with
-`NODE_OPTIONS=--max-old-space-size=3072`. On an 8 GB Windows workstation whose
-Docker VM had 3.9 GB, `pnpm install` finished in 41 minutes and the engine then
-died during `next build` (`failed to receive status: rpc error: code =
+Compiling OpenMAIC here is now the exception — only a build with a different
+frame origin needs it — and it wants a few gigabytes of headroom: it compiles
+with `NODE_OPTIONS=--max-old-space-size=3072`. On an 8 GB Windows workstation
+whose Docker VM had 3.9 GB, `pnpm install` finished in 41 minutes and the engine
+then died during `next build` (`failed to receive status: rpc error: code =
 Unavailable ... EOF`), so raise Docker's memory well above that heap (6 GB is a
 workable floor) or build on i3 as above.
 
-It does not have to be built on either. The `openmaic image` workflow fetches
+The `openmaic image` workflow fetches
 OpenMAIC at the pinned commit (`scripts/bootstrap.sh --only OpenMAIC`), builds it
 with the frame origin `docker compose config` resolves — `OPENMAIC_FRAME_ANCESTORS`
 from `.env`, `https://registrar.atheniq.institute` by default — so the image and
