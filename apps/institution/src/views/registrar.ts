@@ -92,6 +92,13 @@ export function dashboard(
 
   <section class="section section--tight">
     <div class="shell">
+      ${
+        summary.mailboxesReserved > 0
+          ? `<div class="alert alert--info" role="status">
+              <p><strong>${summary.mailboxesReserved} reserved ${summary.mailboxesReserved === 1 ? "address is" : "addresses are"} not a working mailbox.</strong> Admission keeps the address when the mail step cannot run, so mail is not delivered until it is retried. <a href="/students">Review reserved addresses</a></p>
+            </div>`
+          : ""
+      }
       <div class="metrics">
         ${metric(String(summary.awaitingDecision), "awaiting a decision")}
         ${metric(String(summary.students), "students on the roster")}
@@ -328,7 +335,13 @@ export function applicationDetail(
   });
 }
 
-export function students(ctx: UiContext, list: Student[]): string {
+/** Shown wherever a retry would have no provider to reach. */
+const MAIL_UNCONFIGURED = `<div class="alert alert--info" role="status"><p><strong>Mail delivery is not configured.</strong> MAIL_PROVIDER is local, so a retry has no provider to reach. Set MAIL_PROVIDER=stalwart with STALWART_URL and STALWART_TOKEN, redeploy, then retry.</p></div>`;
+
+const RETRY_NOTE = `<p class="form-note">A retry creates the mailbox at the provider and issues a new temporary password, shown once on the student record; the student's previous portal password stops working.</p>`;
+
+export function students(ctx: UiContext, list: Student[], mail: { configured: boolean }): string {
+  const reserved = list.filter((item) => item.mailbox.status === "reserved");
   const body = `
   ${pageHead({
     eyebrow: "Roster",
@@ -338,12 +351,37 @@ export function students(ctx: UiContext, list: Student[]): string {
     facts: [
       { label: "Students", value: String(list.length) },
       { label: "Active", value: String(list.filter((item) => item.status === "active").length) },
-      { label: "Mailboxes reserved", value: String(list.filter((item) => item.mailbox.status === "reserved").length) },
+      { label: "Mailboxes reserved", value: String(reserved.length) },
     ],
   })}
 
   <section class="section section--tight">
     <div class="shell">
+      ${
+        reserved.length > 0
+          ? `<div class="panel mb-8">
+              <h2>${reserved.length} reserved ${reserved.length === 1 ? "address is" : "addresses are"} not a working mailbox.</h2>
+              <p>Admission keeps the @${esc(ctx.mailDomain)} address when the provider is not configured, or refuses during an outage. The student account works; mail to the address does not.</p>
+              ${mail.configured ? "" : MAIL_UNCONFIGURED}
+              <div class="table-wrap"><table class="table">
+                <thead><tr><th>Student</th><th>Reserved address</th><th>Reserved</th><th></th></tr></thead>
+                <tbody>
+                  ${reserved
+                    .map(
+                      (student) => `<tr>
+                        <td><a class="textlink" href="/students/${esc(student.id)}">${esc(student.firstName)} ${esc(student.lastName)}</a><span class="table__sub">${esc(student.number)}</span></td>
+                        <td>${esc(student.schoolEmail)}</td>
+                        <td>${esc(dateLabel(student.mailbox.provisionedAt))}</td>
+                        <td><form method="post" action="/students/${esc(student.id)}/mailbox"><button class="button button--ghost" type="submit"${mail.configured ? "" : " disabled"}>Retry mailbox</button></form></td>
+                      </tr>`,
+                    )
+                    .join("")}
+                </tbody>
+              </table></div>
+              ${RETRY_NOTE}
+            </div>`
+          : ""
+      }
       ${
         list.length > 0
           ? `<div class="table-wrap"><table class="table">
@@ -377,7 +415,7 @@ export function studentDetail(
   student: Student,
   enrollments: Enrollment[],
   courses: CatalogCourse[],
-  state: { error?: string; notice?: string; tempPassword?: string } = {},
+  state: { error?: string; notice?: string; tempPassword?: string; mailConfigured?: boolean } = {},
 ): string {
   const program = programBySlug(student.programSlug);
   const term = termById(student.termId);
@@ -400,6 +438,20 @@ export function studentDetail(
       <div>
         ${state.error ? notice("error", state.error) : ""}
         ${state.notice ? notice("success", state.notice) : ""}
+        ${
+          student.mailbox.status === "reserved"
+            ? `<div class="panel mb-8">
+                <p class="eyebrow">Mailbox</p>
+                <h2>Reserved — not yet a working mailbox.</h2>
+                <p>${esc(student.schoolEmail)} is held in the registry, but the provider has not created it: mail delivery is not configured, or the provider refused the account at admission. The portal works; mail to this address does not.</p>
+                ${state.mailConfigured === false ? MAIL_UNCONFIGURED : ""}
+                <form method="post" action="/students/${esc(student.id)}/mailbox">
+                  <button class="button" type="submit"${state.mailConfigured === false ? " disabled" : ""}>Retry mailbox</button>
+                </form>
+                ${RETRY_NOTE}
+              </div>`
+            : ""
+        }
         ${
           state.tempPassword
             ? `<div class="panel mb-8">

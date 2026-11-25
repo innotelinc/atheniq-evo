@@ -474,8 +474,8 @@ route("registrar", "POST", "/applications/:id/decision", async ({ config, regist
         ? " The mailbox is active; mail sign-in uses the mail server's single sign-on rather than the temporary password."
         : ` The mailbox is active at ${mailer?.provider ?? "the provider"}.`
       : mailer
-        ? " The mailbox is still reserved; fix the Stalwart settings and reset the student's access to retry."
-        : " The address is reserved because mail delivery is not configured.";
+        ? " The mailbox is still reserved: the provider did not accept the account. It is listed under Roster with a retry once the Stalwart settings are fixed."
+        : " The address is reserved because mail delivery is not configured; it is listed under Roster with a retry once a provider is set.";
   return html(
     200,
     applicationDetail(ui, fresh, {
@@ -493,10 +493,10 @@ route("registrar", "POST", "/applications/:id/decision", async ({ config, regist
     }),
   );
 });
-route("registrar", "GET", "/students", ({ config, registry }) => {
-  return html(200, students(contextFor(config), registry.students()));
+route("registrar", "GET", "/students", ({ config, registry, mailer }) => {
+  return html(200, students(contextFor(config), registry.students(), { configured: Boolean(mailer) }));
 });
-route("registrar", "GET", "/students/:id", ({ config, registry, params, url }) => {
+route("registrar", "GET", "/students/:id", ({ config, registry, mailer, params, url }) => {
   const student = registry.student(params.id ?? "");
   if (!student) return html(404, notFound(contextFor(config), "registrar"));
   return html(
@@ -509,6 +509,7 @@ route("registrar", "GET", "/students/:id", ({ config, registry, params, url }) =
       {
         error: url.searchParams.get("error") ?? undefined,
         notice: url.searchParams.get("notice") ?? undefined,
+        mailConfigured: Boolean(mailer),
       },
     ),
   );
@@ -523,6 +524,7 @@ route("registrar", "POST", "/students/:id/reset", async ({ config, registry, mai
       409,
       studentDetail(ui, student, registry.enrollmentsFor(student.id), registry.courses().all(), {
         error: result.error,
+        mailConfigured: Boolean(mailer),
       }),
     );
   }
@@ -540,8 +542,52 @@ route("registrar", "POST", "/students/:id/reset", async ({ config, registry, mai
     studentDetail(ui, fresh, registry.enrollmentsFor(fresh.id), registry.courses().all(), {
       notice,
       tempPassword: result.value.tempPassword,
+      mailConfigured: Boolean(mailer),
     }),
   );
+});
+
+/**
+ * Retry a mailbox that admission could only reserve. The provider needs a plain
+ * password to create the account, and the registry keeps only a hash, so the
+ * retry issues a fresh temporary password and hands it back once. Refuses when
+ * no provider is configured: there would be nothing to reach.
+ */
+route("registrar", "POST", "/students/:id/mailbox", async ({ config, registry, mailer, params }) => {
+  const student = registry.student(params.id ?? "");
+  const ui = contextFor(config);
+  if (!student) return html(404, notFound(ui, "registrar"));
+  const render = (state: { error?: string; notice?: string; tempPassword?: string }) => {
+    const fresh = registry.student(student.id) ?? student;
+    return html(
+      200,
+      studentDetail(ui, fresh, registry.enrollmentsFor(fresh.id), registry.courses().all(), {
+        ...state,
+        mailConfigured: Boolean(mailer),
+      }),
+    );
+  };
+  if (student.mailbox.status !== "reserved") {
+    return render({ notice: "That mailbox is already active — there is nothing to retry." });
+  }
+  if (!mailer) {
+    return render({
+      error: `${student.schoolEmail} is still reserved: mail delivery is not configured (MAIL_PROVIDER=local), so there is no provider to retry against.`,
+    });
+  }
+  const reset = registry.resetAccess(student.id);
+  if (!reset.ok) return render({ error: reset.error });
+  const mailbox = await provisionMailbox(registry, mailer, student, reset.value.tempPassword);
+  if (mailbox === "active") {
+    return render({
+      notice: `Mailbox activated at ${mailer.provider} for ${student.schoolEmail}. A new temporary password was issued with it.`,
+      tempPassword: reset.value.tempPassword,
+    });
+  }
+  return render({
+    error: `${student.schoolEmail} is still reserved: the provider did not accept the account. The portal password was reset anyway, so hand over the new temporary password below, fix the mail settings, then retry.`,
+    tempPassword: reset.value.tempPassword,
+  });
 });
 
 /* ---------------------------------------------------------------- courses */

@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/main.ts",
     "dev": "node --watch src/main.ts",
-    "test": "node --test test/institution.test.ts",
+    "test": "node --test test/",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }

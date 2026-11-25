@@ -271,8 +271,10 @@ first live run as the contract test for those two, and see `docs/runbook.md`.
   registrar reset updates it. Startup queries the configured domain first, so a
   bad URL, a rejected key or a missing `MAIL_DOMAIN` stops the service with
   `mail preflight failed: …` instead of surfacing on the first admission. If
-  provisioning still fails, the address stays `reserved` and the registrar's
-  access reset retries it.
+  provisioning still fails, the address stays `reserved` and the roster lists it
+  with a per-student **Retry mailbox** action; the dashboard shows how many
+  addresses are waiting, so local mode and an outage are visible rather than
+  silent.
 - **The institution registry and catalog are one JSON file each, one writer.**
   Right for one institute on one process; `docs/institution.md` names the
   migration path and the production hardening order.

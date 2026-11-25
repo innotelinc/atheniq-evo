@@ -186,6 +186,8 @@ Rules the registry enforces:
   reserves the address in the registry only. With `MAIL_PROVIDER=stalwart`,
   admission creates the account at the provider in the same request, and a
   failure leaves the address reserved rather than blocking the portal account.
+  Reserved addresses are never silent: the roster lists them with a per-student
+  retry, and the dashboard names how many are waiting.
 - **The account is issued, not self-service.** An application creates no account.
   Acceptance creates one. There is no public sign-up form that can mint a student
   id, and no route that lets a browser choose its own student number.
@@ -233,10 +235,12 @@ than starting and failing during an admission. A passing preflight does not
 prove delivery — the admitted mailbox is still the real test.
 
 If Stalwart goes down after startup the admission still succeeds and the address
-stays `reserved`. Fix the provider settings, then use **Reset access** on the
-student record; that issues a new temporary password and retries the mailbox. The
-registrar console and portal both show the status, so a mixed migration is
-visible per student.
+stays `reserved`. The roster lists every reserved address with its own **Retry
+mailbox** action, and the console dashboard carries a banner while any remain; a
+retry issues a new temporary password and asks the provider again. With
+`MAIL_PROVIDER=local` the retry explains that there is no provider to reach
+rather than pretending to try. The registrar console and portal both show the
+status, so a mixed migration is visible per student.
 
 Stalwart's management API is JMAP at `/jmap/`, not a REST endpoint. The calls are
 in `apps/institution/src/mail.ts`; the account and domain objects are documented

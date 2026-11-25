@@ -169,7 +169,8 @@ password or hash you set.
 4. Submit one test application, admit it, and confirm the confirmation says the
 mailbox is active. If it says the mailbox is still reserved, read the container
 logs for `mailbox provisioning failed`, fix the Stalwart token or domain, then
-use **Reset access** on the student record to retry.
+open the record from the roster's reserved-address list and use **Retry
+mailbox**. The roster and the dashboard list every reserved address.
 
 ## When the mail preflight fails
 
