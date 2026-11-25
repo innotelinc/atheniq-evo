@@ -99,21 +99,39 @@ The three secrets are generated, not chosen (`openssl rand -hex 32`, `-hex 24`,
 (`INSTITUTION_CONSOLE_URL`) are read by `next build`, not at runtime. A restart
 will not change either. The classroom's is baked by CI into the image Compose
 pulls, from the value `docker compose config` resolves out of `.env.example`
-(`https://registrar.atheniq.institute`), so **a different ancestor is the one case
-that still compiles here**: `OPENMAIC_FRAME_ANCESTORS=… docker compose build
-openmaic`, then `docker compose up -d --pull never openmaic` (a plain `up` pulls
-first and would replace the local build with the published one). The console is
-always built here: `docker compose build console`.
+(`https://registrar.atheniq.institute`), and Compose names that image **by
+digest**, so a `pull` cannot silently swap in a build baked for a different
+ancestor. **A different ancestor is the one case that still compiles here**, and
+a digest reference cannot be built onto — use a local tag for both commands:
+
+```bash
+OPENMAIC_IMAGE=openmaic:local OPENMAIC_FRAME_ANCESTORS=… \
+  docker compose build openmaic
+OPENMAIC_IMAGE=openmaic:local docker compose up -d --pull never openmaic
+```
+
+Under the default reference a plain `up` pulls first and would replace that
+local build with the published one. The console is always built here:
+`docker compose build console`.
 
 ## 1. Bring the stack up, before any edge change
 
 ```bash
 cd /srv/atheniq-evo            # wherever the repository lives on i3
 bash scripts/bootstrap.sh      # fetches upstream/ at the pinned commits and patches it
-docker compose pull openmaic   # the image CI built and proved; no compile here
+docker compose pull openmaic   # the exact digest CI built and proved; no compile here
 docker compose up -d
 docker compose ps
+npm run check:openmaic-csp     # the pulled image's baked CSP vs OPENMAIC_FRAME_ANCESTORS
 ```
+
+That last command is the guard the rest of this run depends on. A digest pin says
+*which* build runs; it does not say the build was made for this estate. If
+`OPENMAIC_FRAME_ANCESTORS` names an origin the image does not (or the image names
+one this file does not), the check exits non-zero, prints both lists and the two
+commands that fix it — instead of leaving a blank iframe in step 6 to diagnose.
+It defaults to `http://127.0.0.1:3000/`; pass `--url http://127.0.0.1:3001/` on
+i3, where the classroom is published on the alternate port.
 
 Compiling OpenMAIC here is now the exception — only a build with a different
 frame origin needs it — and it wants a few gigabytes of headroom: it compiles
@@ -131,12 +149,16 @@ the assertion cannot disagree with what Compose ships. It asserts the
 `frame-ancestors` line on the running container, and publishes the image under
 both `latest` and `sha-<commit>` in two places:
 `ghcr.io/innotelinc/atheniq-evo-openmaic` and the public
-`docker.io/innotel/atheniq-evo-openmaic`. A workstation can then pull instead of
-compiling:
+`docker.io/innotel/atheniq-evo-openmaic`. Its run summary prints the published
+digest, and warns when `docker-compose.yml` and `.env.example` still pin an older
+one. **Deploying a new build is that pin moving, and nothing else**: copy the
+digest from the summary into both files, then `docker compose pull openmaic &&
+docker compose up -d && npm run check:openmaic-csp`. `:latest` is still published
+for a hand pull, but nothing in the estate resolves it any more:
 
 ```bash
-docker pull docker.io/innotel/atheniq-evo-openmaic:latest
-docker pull docker.io/innotel/atheniq-evo-openmaic:sha-<first 12 of the commit>
+docker pull docker.io/innotel/atheniq-evo-openmaic@sha256:<digest from the run summary>
+docker pull docker.io/innotel/atheniq-evo-openmaic:latest   # a hand look, not a pin
 ```
 
 The Docker Hub copy is public, so pulling it needs no credentials and no GitHub
@@ -158,7 +180,7 @@ curl -fsS http://127.0.0.1:8081/health
 curl -s -o /dev/null -w 'registrar /   %{http_code}\n' -H 'Host: registrar.atheniq.institute' http://127.0.0.1:8081/
 curl -s -o /dev/null -w 'registrar /courses %{http_code} -> %{redirect_url}\n' -H 'Host: registrar.atheniq.institute' http://127.0.0.1:8081/courses
 curl -s -o /dev/null -w 'openmaic  /   %{http_code}\n' http://127.0.0.1:3001/
-curl -sI http://127.0.0.1:3001/ | grep -iE 'content-security-policy|x-frame-options'
+npm run check:openmaic-csp -- --url http://127.0.0.1:3001/
 ```
 
 *Proves it:* `/health` answers `ok`, an unauthenticated registrar path answers

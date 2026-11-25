@@ -192,6 +192,42 @@ jobs:
           docker push "$image:latest"
           echo "pushed $image:sha-${GITHUB_SHA:0:12} and $image:latest"
 
+      # `docker-compose.yml` and `.env.example` name one manifest by digest, so
+      # a checkout cannot pull a build nobody proved. A digest pin is only
+      # useful if the next one is easy to find: this prints the reference to
+      # paste, and warns when the pin still names an older build — visible in
+      # the run that caused the drift, not later in a blank iframe.
+      - name: Report the digest to pin
+        if: github.event_name != 'pull_request'
+        run: |
+          digest_of() { sed -n 's/.*atheniq-evo-openmaic@\(sha256:[0-9a-f]\{64\}\).*/\1/p' "$1" | head -1; }
+          pinned="$(digest_of docker-compose.yml)"
+          pinned_env="$(digest_of .env.example)"
+          docker image inspect openmaic:csp --format '{{range .RepoDigests}}{{println .}}{{end}}' > digests.txt
+          published="$(digest_of digests.txt)"
+
+          {
+            echo '### Classroom image digest'
+            echo ''
+            if [ -n "$published" ]; then
+              echo "- published by this run: \`${published}\`"
+            else
+              echo '- published by this run: the registries did not report a digest'
+            fi
+            echo "- pinned in docker-compose.yml: \`${pinned:-none}\`"
+            echo "- pinned in .env.example: \`${pinned_env:-none}\`"
+            echo ''
+            echo 'To deploy exactly this build:'
+            echo ''
+            echo '```'
+            echo "image: \"\${OPENMAIC_IMAGE:-docker.io/innotel/atheniq-evo-openmaic@${published:-sha256:…}}\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$published" ] && { [ "$published" != "$pinned" ] || [ "$published" != "$pinned_env" ]; }; then
+            echo "::warning title=The classroom digest pin is behind this build::docker-compose.yml and .env.example name $pinned / $pinned_env, this run published $published. Update both when you intend to deploy it; a pull under a digest cannot drift on its own."
+          fi
+
       - name: Sign in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3

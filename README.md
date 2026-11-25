@@ -218,8 +218,13 @@ Run: `npm run check`.
   that image to GHCR and to the public Docker Hub repository
   `docker.io/innotel/atheniq-evo-openmaic` (`latest` and `sha-<commit>`), so a
   workstation pulls it without a GitHub package scope. `docker compose up` uses
-  that image rather than compiling: the service names it as
-  `OPENMAIC_IMAGE`, so a plain `up` is a pull plus a start. The same build
+  that image rather than compiling: the service names it by **digest** in
+  `OPENMAIC_IMAGE`, so a plain `up` is a pull plus a start, and a `pull` cannot
+  quietly move to a build nobody proved — deploying a new one means moving that
+  pin to the digest the workflow prints. `npm run check:openmaic-csp` then asks
+  the running container what policy it actually ships and fails, naming the two
+  origins, when it disagrees with `OPENMAIC_FRAME_ANCESTORS`; without that
+  comparison the symptom is only a blank iframe in the registrar. The same build
   never finished on this workstation — the Docker engine died during `next build`
   on a 3.9 GB VM, which `docs/cutover.md` records.
 - **Live gateway**: the bridge's `/health` against the real OmniRoute answered

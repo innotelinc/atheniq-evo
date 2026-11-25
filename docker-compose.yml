@@ -59,15 +59,25 @@ services:
     # CI builds and proves this image (`.github/workflows/build-openmaic-image.yml`)
     # and publishes it to Docker Hub, so `up` here pulls it instead of spending
     # ~15 minutes compiling. With both `image` and `build`, Compose pulls first
-    # and only builds from source when the tag cannot be fetched.
+    # and only builds from source when the reference cannot be fetched.
     #
-    # The published image carries the frame origin CI resolved: the
+    # Pinned by **digest**, not by `:latest`: the tag is repointed on every push
+    # to main, so a `pull` under it can quietly swap the classroom for a build
+    # nobody proved. The digest names one manifest and cannot move; bump it from
+    # the digest the image workflow prints in its run summary.
+    #
+    # The pinned image carries the frame origin CI resolved: the
     # OPENMAIC_FRAME_ANCESTORS of .env.example, `https://registrar.atheniq.institute`.
-    # A different ancestor has to be compiled here, and that local build must then
-    # be started without pulling over it:
-    #   OPENMAIC_FRAME_ANCESTORS=https://example.org docker compose build openmaic
-    #   docker compose up -d --pull never openmaic
-    image: "${OPENMAIC_IMAGE:-docker.io/innotel/atheniq-evo-openmaic:latest}"
+    # A different ancestor has to be compiled here, and that local build must
+    # then be started without pulling over it — and under a tag, because a
+    # digest reference cannot be built onto:
+    #   OPENMAIC_IMAGE=openmaic:local OPENMAIC_FRAME_ANCESTORS=https://example.org \
+    #     docker compose build openmaic
+    #   OPENMAIC_IMAGE=openmaic:local docker compose up -d --pull never openmaic
+    #
+    # Either way, prove the running image's policy against this estate:
+    #   npm run check:openmaic-csp
+    image: "${OPENMAIC_IMAGE:-docker.io/innotel/atheniq-evo-openmaic@sha256:fd0e3757eb7c8670b37c6122ba23ed1135ae8602c2de124df47daedf1a4a0a92}"
     build:
       context: ./upstream/OpenMAIC
       args:
