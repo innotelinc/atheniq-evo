@@ -223,7 +223,7 @@ let project = Array.isArray(projects) ? projects.find((item) => item.name === pr
 if (!DRY && !project) {
   project = await call('POST', '/projects', {
     name: projectName,
-    description: 'AthenIQ Institute: public site and registrar (atheniq.innotel.site, registrar.innotel.site)',
+    description: 'AthenIQ Institute - public site and registrar (atheniq.innotel.site, registrar.innotel.site)',
   });
   console.log('  created');
 } else if (project) {
@@ -260,7 +260,7 @@ const createBody = {
   docker_compose_location: env.COOLIFY_COMPOSE_LOCATION || '/docker-compose.coolify.yml',
   ports_exposes: '8080',
   name: appName,
-  description: 'AthenIQ Institute: public site and registrar',
+  description: 'AthenIQ Institute - public site and registrar',
   instant_deploy: false,
 };
 

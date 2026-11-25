@@ -73,6 +73,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--domain", action="append", default=[], help="hostname to route (repeatable)")
     parser.add_argument("--forward-host", default="192.168.1.52", help="where the institution listens")
     parser.add_argument("--forward-port", type=int, default=8091, help="published container port")
+    parser.add_argument("--forward-scheme", default="http", choices=("http", "https"), help="upstream scheme")
+    parser.add_argument("--advanced-config", default="", help="extra nginx directives for the host")
     parser.add_argument("--cert-domain", default="*.innotel.site", help="wildcard certificate to attach")
     parser.add_argument("--dry-run", action="store_true", help="report, change nothing")
     args = parser.parse_args(argv)
@@ -105,7 +107,7 @@ def main(argv: list[str]) -> int:
 
     body = {
         "domain_names": domains,
-        "forward_scheme": "http",
+        "forward_scheme": args.forward_scheme,
         "forward_host": args.forward_host,
         "forward_port": args.forward_port,
         "certificate_id": certificate["id"],
@@ -117,7 +119,7 @@ def main(argv: list[str]) -> int:
         "caching_enabled": False,
         "allow_websocket_upgrade": True,
         "access_list_id": 0,
-        "advanced_config": "",
+        "advanced_config": args.advanced_config,
         "meta": {"letsencrypt_agree": False, "dns_challenge": False},
         "locations": [],
     }
@@ -128,6 +130,7 @@ def main(argv: list[str]) -> int:
             same = (
                 existing.get("forward_host") == args.forward_host
                 and existing.get("forward_port") == args.forward_port
+                and (existing.get("forward_scheme") or "http") == args.forward_scheme
                 and existing.get("certificate_id") == certificate["id"]
             )
             print(f"{domain}: already routed by proxy host {existing['id']} ({'matches' if same else 'DIFFERS'})")
@@ -139,7 +142,7 @@ def main(argv: list[str]) -> int:
             continue
 
         if args.dry_run:
-            print(f"{domain}: would create proxy host -> http://{args.forward_host}:{args.forward_port} "
+            print(f"{domain}: would create proxy host -> {args.forward_scheme}://{args.forward_host}:{args.forward_port} "
                   f"(cert {certificate['id']} for {args.cert_domain})")
             continue
 
@@ -148,7 +151,7 @@ def main(argv: list[str]) -> int:
             print(f"register-proxy-hosts: creating the host for {domains} failed ({status}): {result}", file=sys.stderr)
             return 1
         print(f"{', '.join(domains)}: created proxy host {result.get('id') if isinstance(result, dict) else '?'} "
-              f"-> http://{args.forward_host}:{args.forward_port}, cert {certificate['id']}")
+              f"-> {args.forward_scheme}://{args.forward_host}:{args.forward_port}, cert {certificate['id']}")
         break
 
     return 0
