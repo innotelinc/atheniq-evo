@@ -120,18 +120,24 @@ local build with the published one. The console is always built here:
 cd /srv/atheniq-evo            # wherever the repository lives on i3
 bash scripts/bootstrap.sh      # fetches upstream/ at the pinned commits and patches it
 docker compose pull openmaic   # the exact digest CI built and proved; no compile here
-docker compose up -d
+npm run up                     # up --wait, then the classroom's CSP check
 docker compose ps
-npm run check:openmaic-csp     # the pulled image's baked CSP vs OPENMAIC_FRAME_ANCESTORS
 ```
 
-That last command is the guard the rest of this run depends on. A digest pin says
-*which* build runs; it does not say the build was made for this estate. If
-`OPENMAIC_FRAME_ANCESTORS` names an origin the image does not (or the image names
-one this file does not), the check exits non-zero, prints both lists and the two
-commands that fix it — instead of leaving a blank iframe in step 6 to diagnose.
-It defaults to `http://127.0.0.1:3000/`; pass `--url http://127.0.0.1:3001/` on
-i3, where the classroom is published on the alternate port.
+`npm run up` starts the stack and then runs `npm run check:openmaic-csp` as the
+one-shot `csp-check` service, so the guard the rest of this run depends on is
+part of bring-up rather than a command someone remembers: a container that is up
+but serves the wrong `frame-ancestors` fails the start command. If the stack is
+already running, `bash scripts/up.sh --no-deps` re-runs only the check.
+
+A digest pin says *which* build runs; it does not say the build was made for this
+estate. If `OPENMAIC_FRAME_ANCESTORS` names an origin the image does not (or the
+image names one this file does not), the check exits non-zero, prints both lists
+and the two commands that fix it — instead of leaving a blank iframe in step 6 to
+diagnose. The Compose service asks the classroom over the Compose network, so no
+port has to be guessed; running the script directly on the host defaults to
+`http://127.0.0.1:3000/` — pass `--url http://127.0.0.1:3001/` on i3, where the
+classroom is published on the alternate port.
 
 Compiling OpenMAIC here is now the exception — only a build with a different
 frame origin needs it — and it wants a few gigabytes of headroom: it compiles

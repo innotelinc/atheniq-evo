@@ -24,6 +24,30 @@ answer. To publish the console later, give it its own hostname (for example
   `https://mail.innotel.us/jmap/` must answer. The service checks URL, key and
   domain at startup, so a wrong value fails the deploy before it serves a page.
 
+## 0. Put the API token in a file
+
+The deploy is driven from this repository, so the token lives in a gitignored
+file rather than in a shell history or a chat message:
+
+```bash
+cp deploy/coolify/.env.coolify.example .env.coolify
+```
+
+In Coolify: **Keys & Tokens → API tokens → Create New Token**, name it
+`atheniq-deploy`, give it the `write` permission (the default `read` cannot
+deploy), and copy the value once — the UI never shows it again. Put it in
+`COOLIFY_TOKEN` and the instance URL in `COOLIFY_BASE_URL` (`https://…` or
+`http://host:8000`, without `/api/v1`). Leave `COOLIFY_SERVER_UUID` empty on a
+single-server instance.
+
+```bash
+git check-ignore -v .env.coolify   # must match .gitignore's `.env.*`
+```
+
+That check is worth running before pasting the token: `.env.coolify` is ignored,
+while `deploy/coolify/.env.coolify.example` is committed. Nothing in this
+repository prints either value.
+
 ## 1. Create the resource
 
 1. In Coolify, open the project **atheniq** (create it if it does not exist).
@@ -149,6 +173,19 @@ prove delivery; the admitted mailbox in step 4 is the real test.
 
 ## What was not done here
 
-No Coolify API token, server URL or Docker daemon was available in this
-workspace, so the resource was **not** created or deployed. These files are the
-deployable definition; steps 1–4 are the remaining actions on the Coolify host.
+The resource was **not** created or deployed. These files are the deployable
+definition, and `deploy/coolify/.env.coolify.example` is where the API token
+goes (§0); steps 1–4 are the remaining actions.
+
+Two things block a deploy driven from a workstation:
+
+- **No token yet.** Nothing in this workspace holds one, and none is printed
+  here. §0 is the file to put it in.
+- **The API is behind the edge's sign-in.** `https://deploy.innotel.us/api/v1/health`
+  answers `302` to `auth.cerulean.innotel.us/outpost.goauthentik.io/start`, not
+  `401` from Coolify: forward auth answers before the API does, so a bearer
+  token alone gets redirected. Point `COOLIFY_BASE_URL` at the instance over the
+  LAN (`http://<coolify host>:8000`, no `/api/v1`) or exempt `/api/*` from the
+  outpost. `192.168.1.52:8000` and `192.168.1.53:8000` did not answer the API
+  from this workstation on 25 Nov, so the host and port have to come from the
+  Coolify UI's own address bar.

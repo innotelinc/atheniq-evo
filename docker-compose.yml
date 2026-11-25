@@ -116,6 +116,40 @@ services:
         condition: service_started
     networks: [atheniq]
 
+  # The classroom's frame policy is baked at build time, so a running container
+  # can disagree with this estate and still look healthy: the registrar's iframe
+  # is simply blank. This one-shot service asks the classroom what it actually
+  # serves and exits non-zero when that is not OPENMAIC_FRAME_ANCESTORS.
+  #
+  # It is behind a profile so a plain `up` does not start it; bring the estate up
+  # with `npm run up`, which runs `docker compose up -d --wait` and then this, and
+  # stops with an error instead of reporting a stack that cannot show a classroom:
+  #
+  #   npm run up
+  #   docker compose run --rm --no-deps csp-check   # on its own, later
+  csp-check:
+    profiles: [csp]
+    image: node:22-alpine
+    depends_on:
+      - openmaic
+    command: [
+      "node",
+      "/check/check-openmaic-csp.mjs",
+      "--url",
+      "http://openmaic:3000/",
+      # The value this estate asked for. The image cannot change this; only a
+      # build or a pull can, and that is exactly what is being compared.
+      "--expect",
+      "${OPENMAIC_FRAME_ANCESTORS:-https://registrar.atheniq.institute}",
+      # The classroom is a Next.js app: up to 60 s from start to answering.
+      "--attempts",
+      "30",
+    ]
+    volumes:
+      - ./scripts/check-openmaic-csp.mjs:/check/check-openmaic-csp.mjs:ro
+    restart: "no"
+    networks: [atheniq]
+
   console:
     build:
       context: ./upstream/atheniq-console

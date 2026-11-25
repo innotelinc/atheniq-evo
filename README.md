@@ -67,8 +67,14 @@ bash scripts/bootstrap.sh     # fetch the four upstreams at the pinned commits, 
 cp .env.example .env          # then fill in the secrets (see below)
 npm install
 npm run check                 # typecheck + the integration suites
-docker compose up -d          # bridge + AI classroom + console + institution
+npm run up                    # bridge + AI classroom + console + institution, CSP-checked
 ```
+
+`npm run up` is `docker compose up -d --wait` followed by the classroom's frame
+policy check, and it exits non-zero when the image Compose pulled does not allow
+this estate's `OPENMAIC_FRAME_ANCESTORS`. A mismatched classroom serves a blank
+iframe in the registrar and nothing else complains, so the start command is the
+place to refuse it. `bash scripts/up.sh --no-deps` re-runs just the check.
 
 Then open `http://atheniq.localhost:8080` for the public site and
 `http://registrar.localhost:8080` for the registrar. Both are the one
@@ -219,12 +225,14 @@ Run: `npm run check`.
   `docker.io/innotel/atheniq-evo-openmaic` (`latest` and `sha-<commit>`), so a
   workstation pulls it without a GitHub package scope. `docker compose up` uses
   that image rather than compiling: the service names it by **digest** in
-  `OPENMAIC_IMAGE`, so a plain `up` is a pull plus a start, and a `pull` cannot
+  `OPENMAIC_IMAGE`, so a plain `up` is a pull plus a start, and a   `pull` cannot
   quietly move to a build nobody proved — deploying a new one means moving that
   pin to the digest the workflow prints. `npm run check:openmaic-csp` then asks
   the running container what policy it actually ships and fails, naming the two
   origins, when it disagrees with `OPENMAIC_FRAME_ANCESTORS`; without that
-  comparison the symptom is only a blank iframe in the registrar. The same build
+  comparison the symptom is only a blank iframe in the registrar. That check is
+  not a habit to remember: `npm run up` runs it as the `csp-check` Compose
+  service after the stack is healthy and exits non-zero when it disagrees. The same build
   never finished on this workstation — the Docker engine died during `next build`
   on a 3.9 GB VM, which `docs/cutover.md` records.
 - **Live gateway**: the bridge's `/health` against the real OmniRoute answered

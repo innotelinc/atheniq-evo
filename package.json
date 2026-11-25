@@ -19,6 +19,7 @@
     "typecheck": "tsc -p apps/bridge/tsconfig.json --noEmit && tsc -p apps/institution/tsconfig.json --noEmit",
     "check:compose": "node scripts/check-compose-env.mjs",
     "check:openmaic-csp": "node scripts/check-openmaic-csp.mjs",
+    "up": "bash scripts/up.sh",
     "check": "npm run check:compose && npm run typecheck && npm test",
     "site": "node apps/institution/src/main.ts",
     "site:dev": "node --watch apps/institution/src/main.ts",

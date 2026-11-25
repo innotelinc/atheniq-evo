@@ -34,7 +34,9 @@ The order matters: each step proves one credential before the next depends on it
 5. **Signara.** Put the console's key in `SIGNARA_API_KEY`. The console's
    *Health* page probes it and reports a rejected key as rejected, not as
    "unavailable".
-6. **Start.** `docker compose up -d`. Then check `curl -s localhost:8787/health`:
+6. **Start.** `npm run up` (`up --wait`, then the classroom's frame-policy check —
+   a pulled image baked for another origin fails here instead of showing a blank
+   iframe later). Then check `curl -s localhost:8787/health`:
 every check should be `ok`; `not_configured` means a variable is missing, and
 `failed` names the host and status.
 7. **Prove the secrets arrived expanded, not literal.** `env_file` is copied
