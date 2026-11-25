@@ -217,9 +217,10 @@ Deployed 25 Nov 2026 from `scripts/coolify-deploy.mjs` against the panel at
 - **Traefik is removed from the path.** The `coolify-proxy` container on i2 is
   stopped with `--restart=no`; `:80`/`:443` there are no longer bound. Coolify
   still renders Traefik labels into the compose file on every deploy, but nothing
-  consumes them. If a deploy or the panel's Proxy page brings `coolify-proxy`
-  back, stop it again — it is redundant while NPM fronts this host, and it was
-  the source of the intermittent 502/503s this layout replaced.
+  consumes them. `coolify-proxy-guard.service` on i2 watches Docker start events
+  and stops `coolify-proxy*` again within seconds, so a deploy or the panel's
+  Proxy page cannot quietly put the proxy back in front of the app. Disable the
+  guard only if the proxy is wanted again.
 - **The published port is part of the compose file.** `ports: ['8098:8080']`
   lives in `docker-compose.coolify.yml`, so a redeploy keeps it. Do not rely on
   the resource's Ports page: for a Docker Compose resource, the compose file is
