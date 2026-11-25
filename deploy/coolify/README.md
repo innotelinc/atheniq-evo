@@ -191,9 +191,16 @@ Three things block a deploy driven from a workstation:
 - **The API is behind the edge's sign-in.** `https://deploy.innotel.us/api/v1/health`
   answers `302` to `auth.cerulean.innotel.us/outpost.goauthentik.io/start`, not
   `401` from Coolify: forward auth answers before the API does, so a bearer
-  token alone gets redirected. Point `COOLIFY_BASE_URL` at the instance over the
-  LAN (`http://<coolify host>:8000`, no `/api/v1`) or exempt `/api/*` from the
-  outpost. No estate host answered the API from this workstation on 25 Nov: `192.168.1.53:8000` refused, `192.168.1.52:8000` is
-  uvicorn, `:8001`/`:9000` are other apps, and `:8443` on both hosts is
-  Traefik's API (`404` JSON), not Coolify's, so the host and port have to come
-  from the Coolify UI's own address bar.
+  token alone gets redirected. The panel itself is not behind the edge's
+  hostname: the edge's NPM row for `deploy.innotel.us` forwards to
+  **`http://192.168.1.85:8000`**, which is Coolify directly and outside the
+  outpost. Set `COOLIFY_BASE_URL=http://192.168.1.85:8000` there.
+- **The panel on `192.168.1.85` is down (25 Nov).** That address accepts TCP on
+  `8000` but never sends an HTTP response, and `:22` accepts a connection but
+  never sends an SSH banner, so the host is hung rather than the panel being
+  stopped. `i3` (`192.168.1.53`), `i2` (`192.168.1.52`) and the edge
+  (`192.168.1.71`) run no panel: `i3` has `coolify-sentinel` and 32 containers
+  but nothing on loopback `8000`, and `/data/coolify/applications` holds only the
+  records the remote panel wrote. `cerulean/atheniq` in the Vault holds
+  `CLAWHUB_TOKEN` and `OMNIROUTE_API_KEY`, and the mount has no `coolify` path at
+  all, so the token has to come from Coolify itself once the panel is back.
