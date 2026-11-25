@@ -177,15 +177,23 @@ The resource was **not** created or deployed. These files are the deployable
 definition, and `deploy/coolify/.env.coolify.example` is where the API token
 goes (§0); steps 1–4 are the remaining actions.
 
-Two things block a deploy driven from a workstation:
+Three things block a deploy driven from a workstation:
 
 - **No token yet.** Nothing in this workspace holds one, and none is printed
   here. §0 is the file to put it in.
+- **The Vault is not a token source.** `https://secrets.cerulean.innotel.us`
+  answers `302` to `/ui/vault/auth?with=oidc` (Authentik SSO), `192.168.1.71:8200`
+  is closed and this workspace has no `vault` CLI or `VAULT_TOKEN`, so there is
+  no unattended read path. The token that login mints carries the read-only
+  `cerulean-read` policy scoped to `cerulean/signara` alone
+  (`deploy/signara/README.md`), so it could not read a Coolify token even if one
+  were stored there — and none is recorded in this repository.
 - **The API is behind the edge's sign-in.** `https://deploy.innotel.us/api/v1/health`
   answers `302` to `auth.cerulean.innotel.us/outpost.goauthentik.io/start`, not
   `401` from Coolify: forward auth answers before the API does, so a bearer
   token alone gets redirected. Point `COOLIFY_BASE_URL` at the instance over the
   LAN (`http://<coolify host>:8000`, no `/api/v1`) or exempt `/api/*` from the
-  outpost. `192.168.1.52:8000` and `192.168.1.53:8000` did not answer the API
-  from this workstation on 25 Nov, so the host and port have to come from the
-  Coolify UI's own address bar.
+  outpost. No estate host answered the API from this workstation on 25 Nov: `192.168.1.53:8000` refused, `192.168.1.52:8000` is
+  uvicorn, `:8001`/`:9000` are other apps, and `:8443` on both hosts is
+  Traefik's API (`404` JSON), not Coolify's, so the host and port have to come
+  from the Coolify UI's own address bar.
