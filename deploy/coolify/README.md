@@ -70,7 +70,8 @@ existing project, resource and matching env var are left alone.
 `COOLIFY_SERVER` defaults to **`i2-local`**: `i3-local` is the intended
 destination, but i3's Docker 29 session dies at `exporting layers`
 (`deploy/signara/README.md`), so the build runs on i2 (42 GB free, Docker
-29.10.0) and Coolify's proxy config still routes the hostnames to the container.
+29.10.0). Ingress is the NPM edge, not Coolify's proxy: the container publishes
+host port `8098` and NPM proxy host **412** forwards both names to it.
 
 ## 1. Create the resource
 
@@ -115,28 +116,32 @@ short, if both registrar credentials are empty, if `COOKIE_SECURE=false`, or if
 the Stalwart preflight fails. That is deliberate: a half-configured deployment
 should fail at startup, not after an admission.
 
-## 3. Assign both domains
+## 3. Point the NPM edge at the published port
 
-Open the resource's **Domains** tab and add two domains to the `institution`
-service. Use protocol HTTPS and internal port `8080` for each:
+Coolify's Traefik proxy is **not** in the request path. The `institution`
+service publishes host port `8098` (see `docker-compose.coolify.yml`), and the
+NPM edge (`192.168.1.71`, the "cerulean" instance) owns both hostnames:
 
 ```
-atheniq.innotel.site       -> 8080
-registrar.innotel.site     -> 8080
+proxy host 412
+  atheniq.innotel.site    -> http://192.168.1.52:8098
+  registrar.innotel.site  -> http://192.168.1.52:8098
+  certificate 186 (*.innotel.site), SSL forced
 ```
 
-Coolify routes by hostname to the same container. The service reads
-`X-Forwarded-Host` because `TRUST_PROXY=true`; without that, every request would
-look like the internal container host and the registrar would never appear.
+Keep the Coolify **Domains** tab entries for these two names as documentation
+(Coolify still generates Traefik labels), but nothing listens on them: the
+`coolify-proxy` container on i2 is stopped and its restart policy is `no`. All
+ingress to this host goes through NPM to published container ports.
 
-Both names reach the same container, but they do not serve the same pages:
-`registrar.innotel.site` answers with the registrar sign-in and, once signed in,
-the registrar panel. It never serves the public site, and the public host never
-serves the panel.
+The service reads `X-Forwarded-Host` because `TRUST_PROXY=true`; NPM sets it, so
+the hostname still chooses the surface. Both names reach the same container but
+they do not serve the same pages: `registrar.innotel.site` answers with the
+registrar sign-in and, once signed in, the registrar panel. It never serves the
+public site, and the public host never serves the panel.
 
-Do not add a public `ports:` mapping for 8080. Coolify's proxy is the only
-ingress, and the container should not be reachable directly. Do not point any
-domain at port 3100 from this resource; there is no service listening there.
+Do not point any domain at port 3100 from this resource; there is no service
+listening there.
 
 ## 4. Deploy and verify
 
@@ -204,19 +209,21 @@ Deployed 25 Nov 2026 from `scripts/coolify-deploy.mjs` against the panel at
   in project `AthenIQ`, environment `production`.
 - **Build** happens on i2 from the private GitHub App; the image tag is the
   commit, so the running container always names its source commit.
-- **The edge still terminates TLS.** The NPM edge (`192.168.1.71`) answers for
-  both hostnames with its `*.innotel.site` certificate and proxy host **412**
-  forwards to `https://192.168.1.52:443` with `proxy_ssl_verify off`. It has to
-  be HTTPS: the panel's Traefik answers port 80 with a redirect to 443.
-- **The proxy on i2 belongs to the panel.** `/data/coolify/proxy/docker-compose.yml`
-  is written from the saved configuration in the panel (Server → Proxy), and
-  starting, stopping or editing the proxy there is what restarts `coolify-proxy`.
-  Its configuration here differs from the panel default in two ways, both stored
-  in the panel: the `8080:8080` port mapping is dropped, because `oauth2-proxy`
-  already owns host port 8080 on i2, and no ACME resolver is defined, because
-  TLS for these names ends at the edge. Traefik therefore logs
-  `Router uses a nonexistent certificate resolver` for routers labelled with
-  `letsencrypt`; the routes still serve.
+- **The NPM edge terminates TLS and is the only ingress.** Proxy host **412**
+  answers both hostnames with certificate 186 (`*.innotel.site`, SSL forced) and
+  forwards plain HTTP to `http://192.168.1.52:8098`, the port the container
+  publishes. No TLS handshake, no SNI matching and no proxy config sits between
+  NPM and the app.
+- **Traefik is removed from the path.** The `coolify-proxy` container on i2 is
+  stopped with `--restart=no`; `:80`/`:443` there are no longer bound. Coolify
+  still renders Traefik labels into the compose file on every deploy, but nothing
+  consumes them. If a deploy or the panel's Proxy page brings `coolify-proxy`
+  back, stop it again — it is redundant while NPM fronts this host, and it was
+  the source of the intermittent 502/503s this layout replaced.
+- **The published port is part of the compose file.** `ports: ['8098:8080']`
+  lives in `docker-compose.coolify.yml`, so a redeploy keeps it. Do not rely on
+  the resource's Ports page: for a Docker Compose resource, the compose file is
+  what Coolify deploys.
 - **`/data` is chowned for you.** The compose file's one-shot `data-init` service
   runs `chown -R 1000:1000 /data` before `institution` starts, so a fresh volume
   no longer needs a manual `chown` on the host: that was the only reason the
