@@ -48,6 +48,30 @@ That check is worth running before pasting the token: `.env.coolify` is ignored,
 while `deploy/coolify/.env.coolify.example` is committed. Nothing in this
 repository prints either value.
 
+## 0b. Or let the script do steps 1–4
+
+`scripts/coolify-deploy.mjs` drives the API with the token from §0. It never
+prints a secret value: dry runs show `"<64 chars>"` where a secret would be.
+
+```bash
+node scripts/coolify-deploy.mjs --init      # write .env.coolify with generated secrets
+node scripts/coolify-deploy.mjs --dry-run   # print every request, send none
+node scripts/coolify-deploy.mjs             # project, resource, env, domains, deploy
+```
+
+What it does, in order: health-check the panel; resolve the server record named
+by `COOLIFY_SERVER`; create the `atheniq` project if absent; create the Docker
+Compose resource from `/docker-compose.coolify.yml` on `main` (or reuse it); set
+`SESSION_SECRET`, the registrar credentials, the real URL pair, `TRUST_PROXY` and
+`COOKIE_SECURE`; put both hostnames on the `institution` service through
+`docker_compose_domains`; then `POST /deploy`. Re-running it is safe — an
+existing project, resource and matching env var are left alone.
+
+`COOLIFY_SERVER` defaults to **`i2-local`**: `i3-local` is the intended
+destination, but i3's Docker 29 session dies at `exporting layers`
+(`deploy/signara/README.md`), so the build runs on i2 (42 GB free, Docker
+29.10.0) and Coolify's proxy config still routes the hostnames to the container.
+
 ## 1. Create the resource
 
 1. In Coolify, open the project **atheniq** (create it if it does not exist).
