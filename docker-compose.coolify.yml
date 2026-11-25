@@ -14,10 +14,25 @@
 # Coolify's proxy. See deploy/coolify/README.md for the full procedure.
 
 services:
+  # The registry volume is created by Docker as root, but the service runs as
+  # the image's `node` user (uid 1000). Without this one-shot step a fresh
+  # volume makes the first write fail and the container restart-loop. It runs
+  # to completion before `institution` starts, and is a no-op afterwards.
+  data-init:
+    image: alpine:3.20
+    restart: "no"
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 1000:1000 /data && chmod 0755 /data"]
+    volumes:
+      - institution-data:/data
+
   institution:
     build:
       context: ./apps/institution
     restart: unless-stopped
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       PORT: "8080"
@@ -47,3 +62,4 @@ services:
 
 volumes:
   institution-data:
+
