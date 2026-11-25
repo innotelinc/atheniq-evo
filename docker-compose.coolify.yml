@@ -1,10 +1,11 @@
 # Coolify resource: AthenIQ Institute site and registrar
 #
-# One container serves two hostnames. Assign both domains to the `institution`
-# service in Coolify (Domains -> Add domain), each with internal port 8080:
+# One container serves two hostnames. Nginx Proxy Manager (the "cerulean" edge)
+# fronts this service directly; Coolify's Traefik proxy is not in the path.
+# The container publishes host port 8098, and NPM forwards both names to it:
 #
-#   https://atheniq.innotel.site:8080     public site and student portal
-#   https://registrar.innotel.site:8080   institution registrar panel
+#   https://atheniq.innotel.site    -> http://192.168.1.52:8098
+#   https://registrar.innotel.site  -> http://192.168.1.52:8098
 #
 # `registrar.innotel.site` is the registrar surface of this service (admissions,
 # account issuance, roster), not the AthenIQ console on port 3100. The console is
@@ -57,6 +58,8 @@ services:
       CREDENTIAL_VERIFY_URL: ${CREDENTIAL_VERIFY_URL:-}
     expose:
       - "8080"
+    ports:
+      - "8098:8080"
     volumes:
       - institution-data:/data
 
