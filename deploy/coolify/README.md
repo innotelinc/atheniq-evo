@@ -195,36 +195,43 @@ prove delivery; the admitted mailbox in step 4 is the real test.
   `Authorization: Bearer …`.
 - A test sign-in to the mailbox works with the student's temporary password.
 
-## What was not done here
+## How this resource is actually deployed
 
-The resource was **not** created or deployed. These files are the deployable
-definition, and `deploy/coolify/.env.coolify.example` is where the API token
-goes (§0); steps 1–4 are the remaining actions.
+Deployed 25 Nov 2026 from `scripts/coolify-deploy.mjs` against the panel at
+`http://192.168.1.85:8000`:
 
-Three things block a deploy driven from a workstation:
+- **Server** `i2-local` (`192.168.1.52`); resource `xw65pbpnsz7vlw2uhf0hbnpv`
+  in project `AthenIQ`, environment `production`.
+- **Build** happens on i2 from the private GitHub App; the image tag is the
+  commit, so the running container always names its source commit.
+- **The edge still terminates TLS.** The NPM edge (`192.168.1.71`) answers for
+  both hostnames with its `*.innotel.site` certificate and proxy host **412**
+  forwards to `https://192.168.1.52:443` with `proxy_ssl_verify off`. It has to
+  be HTTPS: the panel's Traefik answers port 80 with a redirect to 443.
+- **The proxy on i2 belongs to the panel.** `/data/coolify/proxy/docker-compose.yml`
+  is written from the saved configuration in the panel (Server → Proxy), and
+  starting, stopping or editing the proxy there is what restarts `coolify-proxy`.
+  Its configuration here differs from the panel default in two ways, both stored
+  in the panel: the `8080:8080` port mapping is dropped, because `oauth2-proxy`
+  already owns host port 8080 on i2, and no ACME resolver is defined, because
+  TLS for these names ends at the edge. Traefik therefore logs
+  `Router uses a nonexistent certificate resolver` for routers labelled with
+  `letsencrypt`; the routes still serve.
+- **`/data` is chowned for you.** The compose file's one-shot `data-init` service
+  runs `chown -R 1000:1000 /data` before `institution` starts, so a fresh volume
+  no longer needs a manual `chown` on the host: that was the only reason the
+  first deployment had to be corrected by hand.
+- **The deploy token used for this run was revoked** once the deployment
+  finished. Create a fresh token in §0 before running the script again; a
+  revoked token answers `401` and the script stops at its health check.
 
-- **No token yet.** Nothing in this workspace holds one, and none is printed
-  here. §0 is the file to put it in.
-- **The Vault is not a token source.** `https://secrets.cerulean.innotel.us`
-  answers `302` to `/ui/vault/auth?with=oidc` (Authentik SSO), `192.168.1.71:8200`
-  is closed and this workspace has no `vault` CLI or `VAULT_TOKEN`, so there is
-  no unattended read path. The token that login mints carries the read-only
-  `cerulean-read` policy scoped to `cerulean/signara` alone
-  (`deploy/signara/README.md`), so it could not read a Coolify token even if one
-  were stored there — and none is recorded in this repository.
-- **The API is behind the edge's sign-in.** `https://deploy.innotel.us/api/v1/health`
-  answers `302` to `auth.cerulean.innotel.us/outpost.goauthentik.io/start`, not
-  `401` from Coolify: forward auth answers before the API does, so a bearer
-  token alone gets redirected. The panel itself is not behind the edge's
-  hostname: the edge's NPM row for `deploy.innotel.us` forwards to
-  **`http://192.168.1.85:8000`**, which is Coolify directly and outside the
-  outpost. Set `COOLIFY_BASE_URL=http://192.168.1.85:8000` there.
-- **The panel on `192.168.1.85` is down (25 Nov).** That address accepts TCP on
-  `8000` but never sends an HTTP response, and `:22` accepts a connection but
-  never sends an SSH banner, so the host is hung rather than the panel being
-  stopped. `i3` (`192.168.1.53`), `i2` (`192.168.1.52`) and the edge
-  (`192.168.1.71`) run no panel: `i3` has `coolify-sentinel` and 32 containers
-  but nothing on loopback `8000`, and `/data/coolify/applications` holds only the
-  records the remote panel wrote. `cerulean/atheniq` in the Vault holds
-  `CLAWHUB_TOKEN` and `OMNIROUTE_API_KEY`, and the mount has no `coolify` path at
-  all, so the token has to come from Coolify itself once the panel is back.
+Check it from outside:
+
+```bash
+curl -fsS https://atheniq.innotel.site/health
+curl -fsS -o /dev/null -w '%{http_code}\n' https://registrar.innotel.site/
+```
+
+The registrar sign-in, an admission and the resulting mailbox have not been
+exercised yet; those are steps 4 of §4, and they need the registrar password or
+hash that is set in the resource's environment.
