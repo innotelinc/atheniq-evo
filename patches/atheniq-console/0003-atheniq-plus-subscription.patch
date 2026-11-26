@@ -1,0 +1,2313 @@
+diff --git a/app/api/internal/revenuecat/webhook/route.ts b/app/api/internal/revenuecat/webhook/route.ts
+new file mode 100644
+index 0000000..9766744
+--- /dev/null
++++ b/app/api/internal/revenuecat/webhook/route.ts
+@@ -0,0 +1,61 @@
++import { createHash, timingSafeEqual } from "node:crypto";
++import { NextResponse } from "next/server";
++import { getDb, mutate } from "@/lib/store";
++import { upsertMembership } from "@/lib/premium";
++import { membershipFromEvent, type RevenueCatEvent } from "@/lib/revenuecat";
++
++export const dynamic = "force-dynamic";
++
++/**
++ * RevenueCat's server-to-server events.
++ *
++ * A renewal that happens while nobody opens the app still has to extend the
++ * membership, and a refund has to end it. Both arrive here. The endpoint is
++ * disabled until REVENUECAT_WEBHOOK_TOKEN is set, and the token is compared in
++ * constant time because it is the only thing standing between the internet and
++ * a write to a learner's account.
++ */
++function authorised(request: Request): boolean {
++  const expected = (process.env.REVENUECAT_WEBHOOK_TOKEN || "").trim();
++  if (!expected) return false;
++  const header = request.headers.get("authorization") || "";
++  const given = header.startsWith("Bearer ") ? header.slice(7) : "";
++  const a = createHash("sha256").update(given).digest();
++  const b = createHash("sha256").update(expected).digest();
++  return timingSafeEqual(a, b);
++}
++
++export async function POST(request: Request) {
++  if (!(process.env.REVENUECAT_WEBHOOK_TOKEN || "").trim()) {
++    return NextResponse.json({ ok: false, error: "Webhook is not configured." }, { status: 503 });
++  }
++  if (!authorised(request)) {
++    return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
++  }
++
++  let body: { event?: RevenueCatEvent };
++  try {
++    body = (await request.json()) as { event?: RevenueCatEvent };
++  } catch {
++    return NextResponse.json({ ok: false, error: "Invalid JSON." }, { status: 400 });
++  }
++
++  const event = body.event;
++  if (!event?.app_user_id) {
++    return NextResponse.json({ ok: false, error: "Event has no app user id." }, { status: 400 });
++  }
++
++  const db = getDb();
++  const learner = db.learners.find(
++    (item) =>
++      item.id === event.app_user_id ||
++      item.email.toLowerCase() === String(event.app_user_id).toLowerCase(),
++  );
++  if (!learner) return NextResponse.json({ ok: true, ignored: true });
++
++  const membership = membershipFromEvent(event, learner.id);
++  if (!membership) return NextResponse.json({ ok: true, ignored: true });
++
++  await mutate((database) => upsertMembership(database, membership));
++  return NextResponse.json({ ok: true, stored: true, learnerId: learner.id, status: membership.status });
++}
+diff --git a/app/api/mobile/v1/analytics/route.ts b/app/api/mobile/v1/analytics/route.ts
+new file mode 100644
+index 0000000..7ced63c
+--- /dev/null
++++ b/app/api/mobile/v1/analytics/route.ts
+@@ -0,0 +1,117 @@
++import { getDb } from "@/lib/store";
++import { fail, ok, preflight } from "@/lib/mobile-api";
++import { bearerIdentity } from "@/lib/mobile-auth";
++import { isPlus } from "@/lib/premium";
++
++export const dynamic = "force-dynamic";
++
++const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
++
++/**
++ * Study analytics — a Plus feature.
++ *
++ * Everything here is derived from enrollments and the catalog, so it is true
++ * for a learner who has never opened the app on the web. Pace is lessons per
++ * week since enrollment, not a guess about effort; "focus" is the modules with
++ * the least completion, which is the one thing a list of percentages does not
++ * say by itself.
++ */
++export async function GET(request: Request) {
++  const identity = bearerIdentity(request);
++  if (!identity) return fail("Sign in.", 401);
++  if (identity.role !== "learner") return fail("Analytics belong to learner accounts.", 403);
++
++  const db = getDb();
++  const learner = db.learners.find((item) => item.id === identity.sub);
++  if (!learner) return fail("That learner account no longer exists.", 401);
++  if (!isPlus(db, learner.id)) {
++    return fail("AthenIQ Plus unlocks study analytics.", 402, { upgrade: "plus" });
++  }
++
++  const now = new Date();
++  const enrollments = db.enrollments.filter((item) => item.learnerId === learner.id);
++
++  let lessonsDone = 0;
++  let minutesRemaining = 0;
++  let credits = 0;
++  let lastStudiedAt: string | null = null;
++  const focus: { courseId: string; course: string; module: string; percent: number }[] = [];
++
++  const courses = enrollments
++    .map((enrollment) => {
++      const course = db.courses.find((item) => item.id === enrollment.courseId);
++      if (!course) return null;
++      const doneIds = new Set(enrollment.completedLessonIds);
++      const lessons = course.modules.flatMap((module) => module.lessons);
++      const done = lessons.filter((lesson) => doneIds.has(lesson.id)).length;
++      const total = lessons.length;
++      const percent = total ? Math.round((done / total) * 100) : 0;
++      const weeks = Math.max(1, (now.getTime() - Date.parse(enrollment.enrolledAt)) / WEEK_MS);
++      const pacePerWeek = Math.round((done / weeks) * 10) / 10;
++      const remaining = lessons
++        .filter((lesson) => !doneIds.has(lesson.id))
++        .reduce((sum, lesson) => sum + lesson.minutes, 0);
++
++      lessonsDone += done;
++      minutesRemaining += remaining;
++      if (enrollment.completedAt) credits += course.credits;
++      if (!lastStudiedAt || enrollment.lastSeenAt > lastStudiedAt) lastStudiedAt = enrollment.lastSeenAt;
++
++      for (const module of course.modules) {
++        const moduleDone = module.lessons.filter((lesson) => doneIds.has(lesson.id)).length;
++        const modulePercent = module.lessons.length
++          ? Math.round((moduleDone / module.lessons.length) * 100)
++          : 0;
++        if (modulePercent < 100 && !enrollment.completedAt) {
++          focus.push({ courseId: course.id, course: course.title, module: module.title, percent: modulePercent });
++        }
++      }
++
++      return {
++        id: course.id,
++        code: course.code,
++        title: course.title,
++        percent,
++        done,
++        total,
++        credits: course.credits,
++        completedAt: enrollment.completedAt,
++        enrolledAt: enrollment.enrolledAt,
++        pacePerWeek,
++        remainingMinutes: remaining,
++        lastSeenAt: enrollment.lastSeenAt,
++      };
++    })
++    .filter((item): item is NonNullable<typeof item> => Boolean(item))
++    .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
++
++  focus.sort((a, b) => a.percent - b.percent);
++  const daysSinceLastStudy = lastStudiedAt
++    ? Math.max(0, Math.floor((now.getTime() - Date.parse(lastStudiedAt)) / (24 * 60 * 60 * 1000)))
++    : null;
++
++  return ok({
++    generatedAt: now.toISOString(),
++    totals: {
++      enrolled: courses.length,
++      active: courses.filter((item) => !item.completedAt).length,
++      completed: courses.filter((item) => item.completedAt).length,
++      credits,
++      lessonsDone,
++      minutesRemaining,
++      daysSinceLastStudy,
++    },
++    courses: courses.slice(0, 8),
++    focus: focus.slice(0, 3),
++    note:
++      daysSinceLastStudy === null
++        ? "Start reading and this page fills in."
++        : daysSinceLastStudy > 7
++          ? "It has been a while. One lesson restarts the habit."
++          : null,
++  });
++}
++
++export function OPTIONS() {
++  return preflight();
++}
+diff --git a/app/api/mobile/v1/coach/route.ts b/app/api/mobile/v1/coach/route.ts
+new file mode 100644
+index 0000000..3c6e38c
+--- /dev/null
++++ b/app/api/mobile/v1/coach/route.ts
+@@ -0,0 +1,122 @@
++import { getDb } from "@/lib/store";
++import { fail, ok, preflight, text } from "@/lib/mobile-api";
++import { bearerIdentity } from "@/lib/mobile-auth";
++import { isPlus } from "@/lib/premium";
++
++export const dynamic = "force-dynamic";
++
++/**
++ * The AI study coach — a Plus feature.
++ *
++ * It answers about the course in front of the learner, with the course's own
++ * outcomes and module list as context, and refuses to invent grades, deadlines
++ * or policy: those belong to the registrar. Without a configured gateway it
++ * answers from a deterministic study plan, so a deployment with no model key
++ * still gives the learner something true rather than an error.
++ */
++const SYSTEM = `You are the study coach for AthenIQ Institute, an online university.
++Answer in at most 150 words of plain prose, with no markdown headings and no lists
++longer than four items. Use only the course context in the user's message. If the
++question is not about that course, say so in one sentence and name the closest lesson
++that is. Never invent a grade, a deadline, a fee or a policy: those belong to the
++registrar, and you say so when asked.`;
++
++async function askModel(
++  settings: { baseUrl: string; apiKey: string; model: string },
++  question: string,
++  context: string,
++): Promise<string | null> {
++  const controller = new AbortController();
++  const timer = setTimeout(() => controller.abort(), 12_000);
++  try {
++    const response = await fetch(`${settings.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
++      method: "POST",
++      headers: { authorization: `Bearer ${settings.apiKey}`, "content-type": "application/json" },
++      body: JSON.stringify({
++        model: settings.model,
++        temperature: 0.3,
++        max_tokens: 400,
++        messages: [
++          { role: "system", content: SYSTEM },
++          { role: "user", content: `${context}\n\nQuestion: ${question}` },
++        ],
++      }),
++      signal: controller.signal,
++    });
++    if (!response.ok) return null;
++    const body = (await response.json()) as { choices?: { message?: { content?: string } }[] };
++    const answer = body.choices?.[0]?.message?.content?.trim();
++    return answer ? answer.slice(0, 1600) : null;
++  } catch {
++    return null;
++  } finally {
++    clearTimeout(timer);
++  }
++}
++
++/** A true study plan, built from the course record rather than from a model. */
++function studyPlan(course: { title: string; modules: { title: string; summary: string }[] }): string {
++  const steps = course.modules
++    .slice(0, 4)
++    .map((module, index) => `${index + 1}. ${module.title}: ${module.summary}`)
++    .join("\n");
++  return `A plan for ${course.title}, from the course record:\n\n${steps}\n\nStart with the module you could least explain from memory, read its first lesson, then say the idea out loud in one sentence. Marks, deadlines and extensions are the registrar's, so ask them rather than this app.`;
++}
++
++export async function POST(request: Request) {
++  const identity = bearerIdentity(request);
++  if (!identity) return fail("Sign in to use the study coach.", 401);
++  if (identity.role !== "learner") return fail("The study coach belongs to learner accounts.", 403);
++
++  const db = getDb();
++  const learner = db.learners.find((item) => item.id === identity.sub);
++  if (!learner) return fail("That learner account no longer exists.", 401);
++  if (!isPlus(db, learner.id)) {
++    return fail("AthenIQ Plus unlocks the study coach.", 402, { upgrade: "plus" });
++  }
++
++  let body: { question?: unknown; courseId?: unknown; lessonId?: unknown };
++  try {
++    body = (await request.json()) as typeof body;
++  } catch {
++    return fail("Send a JSON body.");
++  }
++  const question = text(body.question, 600);
++  if (question.length < 4) return fail("Ask a question of at least a few words.");
++
++  const courseId = text(body.courseId, 120);
++  const course = courseId
++    ? db.courses.find((item) => item.id === courseId || item.key === courseId) ?? null
++    : null;
++
++  const context: string[] = [];
++  if (course) {
++    context.push(`Course: ${course.code} ${course.title}`);
++    context.push(`Summary: ${course.summary}`);
++    context.push(`Outcomes: ${course.outcomes.join("; ")}`);
++    context.push(
++      `Modules: ${course.modules
++        .map((module) => `${module.title} (${module.lessons.map((lesson) => lesson.title).join(", ")})`)
++        .join(" | ")}`,
++    );
++    const lessonId = text(body.lessonId, 120);
++    const lesson = lessonId
++      ? course.modules.flatMap((module) => module.lessons).find((item) => item.id === lessonId) ?? null
++      : null;
++    if (lesson) context.push(`Lesson in view: ${lesson.title} (${lesson.type}, ${lesson.minutes} min)`);
++  } else {
++    context.push("No course was named; answer about studying in general.");
++  }
++
++  const ai = db.settings.ai;
++  const answer = ai.baseUrl && ai.apiKey ? await askModel(ai, question, context.join("\n")) : null;
++  if (answer) return ok({ answer, source: "model" as const, courseId: course?.id ?? null });
++  if (!course) {
++    return fail("Name a course so the coach has something true to work from.", 422, { upgrade: null });
++  }
++  return ok({ answer: studyPlan(course), source: "rules" as const, courseId: course.id });
++}
++
++export function OPTIONS() {
++  return preflight();
++}
+diff --git a/app/api/mobile/v1/me/route.ts b/app/api/mobile/v1/me/route.ts
+index 4fadd84..8fe72e5 100644
+--- a/app/api/mobile/v1/me/route.ts
++++ b/app/api/mobile/v1/me/route.ts
+@@ -2,6 +2,7 @@ import { getDb } from "@/lib/store";
+ import { fail, ok, preflight } from "@/lib/mobile-api";
+ import { bearerIdentity } from "@/lib/mobile-auth";
+ import { catalogCard, progressOf } from "@/lib/mobile-shape";
++import { premiumSnapshot } from "@/lib/premium";
+ 
+ export const dynamic = "force-dynamic";
+ 
+@@ -71,6 +72,7 @@ export async function GET(request: Request) {
+     },
+     enrollments,
+     credentials,
++    premium: premiumSnapshot(db, learner.id),
+   });
+ }
+ 
+diff --git a/app/api/mobile/v1/offline/route.ts b/app/api/mobile/v1/offline/route.ts
+index a0c97cc..60a9d7f 100644
+--- a/app/api/mobile/v1/offline/route.ts
++++ b/app/api/mobile/v1/offline/route.ts
+@@ -1,7 +1,8 @@
+-import { getDb } from "@/lib/store";
++import { getDb, mutate } from "@/lib/store";
+ import { fail, ok, preflight } from "@/lib/mobile-api";
+ import { bearerIdentity } from "@/lib/mobile-auth";
+ import { accessOpen } from "@/lib/mobile-commerce";
++import { FREE_OFFLINE_COURSES, downloadAllowed, recordDownload } from "@/lib/premium";
+ import { buildLesson, courseLessonCount, findLesson } from "@/lib/lesson-content";
+ import { courseDetail } from "@/lib/mobile-shape";
+ 
+@@ -35,6 +36,17 @@ export async function GET(request: Request) {
+     return fail("This course opens once the registrar confirms your payment.", 402);
+   }
+ 
++  // The quota lives on the server so clearing the app does not reset it, and so
++  // a modified client cannot talk its way past the free tier.
++  if (!downloadAllowed(db, identity.sub, course.id)) {
++    return fail(
++      `Free accounts keep ${FREE_OFFLINE_COURSES} course offline. AthenIQ Plus keeps the whole library.`,
++      402,
++      { upgrade: "plus" },
++    );
++  }
++  await mutate((database) => recordDownload(database, identity.sub, course.id));
++
+   const programNames = new Map(db.programs.map((program) => [program.id, program.name]));
+   const flat = course.modules.flatMap((module) =>
+     module.lessons.map((lesson) => ({ module, lesson })),
+diff --git a/app/api/mobile/v1/premium/route.ts b/app/api/mobile/v1/premium/route.ts
+new file mode 100644
+index 0000000..369f003
+--- /dev/null
++++ b/app/api/mobile/v1/premium/route.ts
+@@ -0,0 +1,29 @@
++import { getDb } from "@/lib/store";
++import { fail, ok, preflight } from "@/lib/mobile-api";
++import { bearerIdentity } from "@/lib/mobile-auth";
++import { premiumSnapshot } from "@/lib/premium";
++import { revenueCatSettings } from "@/lib/revenuecat";
++
++export const dynamic = "force-dynamic";
++
++/**
++ * What this learner's account includes, straight from the server.
++ *
++ * The app uses this to draw the paywall and the locks, never to grant access:
++ * the coach and analytics routes check the same row again on every call.
++ */
++export async function GET(request: Request) {
++  const identity = bearerIdentity(request);
++  if (!identity) return fail("Sign in.", 401);
++  if (identity.role !== "learner") return fail("Memberships belong to learner accounts.", 403);
++
++  const db = getDb();
++  const learner = db.learners.find((item) => item.id === identity.sub);
++  if (!learner) return fail("That learner account no longer exists.", 401);
++
++  return ok({ ...premiumSnapshot(db, learner.id), storeConfigured: Boolean(revenueCatSettings()) });
++}
++
++export function OPTIONS() {
++  return preflight();
++}
+diff --git a/app/api/mobile/v1/premium/sync/route.ts b/app/api/mobile/v1/premium/sync/route.ts
+new file mode 100644
+index 0000000..c25e19c
+--- /dev/null
++++ b/app/api/mobile/v1/premium/sync/route.ts
+@@ -0,0 +1,66 @@
++import { getDb, mutate } from "@/lib/store";
++import { fail, ok, preflight } from "@/lib/mobile-api";
++import { bearerIdentity } from "@/lib/mobile-auth";
++import { membershipOf, premiumSnapshot, upsertMembership } from "@/lib/premium";
++import {
++  fetchSubscriber,
++  membershipFromSubscriber,
++  revenueCatSettings,
++} from "@/lib/revenuecat";
++
++export const dynamic = "force-dynamic";
++
++/**
++ * Called after a purchase, a restore, or a cold launch.
++ *
++ * The phone sends no receipt and no plan. We ask RevenueCat what this learner
++ * owns, with a key that never leaves the server, and store the answer. If the
++ * store side is not configured the route refuses rather than pretending: a
++ * client cannot mint its own subscription.
++ */
++export async function POST(request: Request) {
++  const identity = bearerIdentity(request);
++  if (!identity) return fail("Sign in.", 401);
++  if (identity.role !== "learner") return fail("Memberships belong to learner accounts.", 403);
++
++  const settings = revenueCatSettings();
++  if (!settings) {
++    return fail("In-app purchases are not configured on this server yet.", 503, { storeConfigured: false });
++  }
++
++  const db = getDb();
++  const learner = db.learners.find((item) => item.id === identity.sub);
++  if (!learner) return fail("That learner account no longer exists.", 401);
++
++  let lookup;
++  try {
++    lookup = await fetchSubscriber(learner.id, settings);
++  } catch (error) {
++    return fail(
++      error instanceof Error ? error.message : "The store could not be reached. Try again.",
++      502,
++      { storeConfigured: true },
++    );
++  }
++
++  const membership = membershipFromSubscriber(learner.id, lookup, settings);
++  await mutate((database) => {
++    if (membership) {
++      upsertMembership(database, membership);
++      return;
++    }
++    // No entitlement at RevenueCat: a lapsed subscription ends here, but a
++    // registrar's grant is not something a store lookup can take away.
++    const existing = membershipOf(database, learner.id);
++    if (existing && existing.store !== "granted") {
++      existing.status = "expired";
++      existing.updatedAt = new Date().toISOString();
++    }
++  });
++
++  return ok({ ...premiumSnapshot(getDb(), learner.id), storeConfigured: true });
++}
++
++export function OPTIONS() {
++  return preflight();
++}
+diff --git a/lib/premium.ts b/lib/premium.ts
+new file mode 100644
+index 0000000..8eb7dc1
+--- /dev/null
++++ b/lib/premium.ts
+@@ -0,0 +1,134 @@
++import type { Database, Membership } from "./types";
++
++/**
++ * AthenIQ Plus.
++ *
++ * The app is free: anyone can browse the catalog, enroll in a free course,
++ * read every lesson, keep progress and collect certificates. Plus is a
++ * subscription for the things a phone can do that a notebook cannot: keeping
++ * the whole library offline, an AI study coach, and study analytics.
++ *
++ * Entitlement is decided here, on the server, from a membership row. The phone
++ * never sends a plan: it asks who it is, and this module answers. A client that
++ * claims to be a subscriber without a row is simply a free account.
++ */
++
++export type Plan = "free" | "plus";
++
++export const PLUS = {
++  entitlementId: "plus",
++  monthlyProductId: "institute.atheniq.plus.monthly",
++  yearlyProductId: "institute.atheniq.plus.yearly",
++} as const;
++
++/** The product ids the stores and the phone both use. */
++export const PLUS_PRODUCTS = [
++  { id: PLUS.monthlyProductId, label: "AthenIQ Plus · monthly", period: "month" },
++  { id: PLUS.yearlyProductId, label: "AthenIQ Plus · yearly", period: "year" },
++] as const;
++
++/** How many courses a free account may keep on the device at once. */
++export const FREE_OFFLINE_COURSES = 1;
++
++export interface PremiumSnapshot {
++  plan: Plan;
++  status: "free" | "active" | "granted" | "expired" | "refunded";
++  source: Membership["store"] | null;
++  productId: string | null;
++  startedAt: string | null;
++  expiresAt: string | null;
++  features: {
++    /** null means no limit. */
++    offlineCourses: number | null;
++    coach: boolean;
++    analytics: boolean;
++    priorityReview: boolean;
++  };
++  offline: { used: number; limit: number | null };
++  products: { id: string; label: string; period: string }[];
++}
++
++/**
++ * A paid row is only a membership while it has not lapsed. A grant without an
++ * expiry is a registrar's decision and stays until the registrar revokes it.
++ */
++function active(membership: Membership | null, now: Date): boolean {
++  if (!membership) return false;
++  if (membership.status !== "active" && membership.status !== "granted") return false;
++  return membership.expiresAt === null || Date.parse(membership.expiresAt) > now.getTime();
++}
++
++export function membershipOf(db: Database, learnerId: string): Membership | null {
++  return (db.memberships ?? []).find((row) => row.learnerId === learnerId) ?? null;
++}
++
++export function isPlus(db: Database, learnerId: string, now = new Date()): boolean {
++  return active(membershipOf(db, learnerId), now);
++}
++
++/** Distinct courses this learner has downloaded, newest record per course. */
++export function offlineCourseIds(db: Database, learnerId: string): string[] {
++  const ids = (db.downloads ?? [])
++    .filter((row) => row.learnerId === learnerId)
++    .map((row) => row.courseId);
++  return [...new Set(ids)];
++}
++
++/**
++ * Whether another download may start. Re-downloading a course the learner
++ * already keeps offline never counts twice, so a free account is not punished
++ * for refreshing the one it has.
++ */
++export function downloadAllowed(
++  db: Database,
++  learnerId: string,
++  courseId: string,
++  now = new Date(),
++): boolean {
++  if (isPlus(db, learnerId, now)) return true;
++  const kept = offlineCourseIds(db, learnerId);
++  return kept.includes(courseId) || kept.length < FREE_OFFLINE_COURSES;
++}
++
++export function recordDownload(
++  db: Database,
++  learnerId: string,
++  courseId: string,
++  now = new Date(),
++): void {
++  if (!Array.isArray(db.downloads)) db.downloads = [];
++  const at = now.toISOString();
++  const existing = db.downloads.find((row) => row.learnerId === learnerId && row.courseId === courseId);
++  if (existing) existing.at = at;
++  else db.downloads.push({ learnerId, courseId, at });
++}
++
++export function premiumSnapshot(db: Database, learnerId: string, now = new Date()): PremiumSnapshot {
++  const membership = membershipOf(db, learnerId);
++  const plus = active(membership, now);
++  const used = offlineCourseIds(db, learnerId).length;
++  return {
++    plan: plus ? "plus" : "free",
++    status: membership ? (plus ? membership.status : "expired") : "free",
++    source: membership?.store ?? null,
++    productId: membership?.productId ?? null,
++    startedAt: membership?.startedAt ?? null,
++    expiresAt: membership?.expiresAt ?? null,
++    features: {
++      offlineCourses: plus ? null : FREE_OFFLINE_COURSES,
++      coach: plus,
++      analytics: plus,
++      priorityReview: plus,
++    },
++    offline: { used, limit: plus ? null : FREE_OFFLINE_COURSES },
++    products: PLUS_PRODUCTS.map(({ id, label, period }) => ({ id, label, period })),
++  };
++}
++
++/** One row per learner: a renewal replaces the row it renews. */
++export function upsertMembership(db: Database, next: Membership): void {
++  if (!Array.isArray(db.memberships)) db.memberships = [];
++  const index = db.memberships.findIndex((row) => row.learnerId === next.learnerId);
++  if (index === -1) db.memberships.push(next);
++  else db.memberships[index] = next;
++}
+diff --git a/lib/revenuecat.ts b/lib/revenuecat.ts
+new file mode 100644
+index 0000000..e9e6725
+--- /dev/null
++++ b/lib/revenuecat.ts
+@@ -0,0 +1,133 @@
++import type { Membership } from "./types";
++
++/** Matches `PLUS.entitlementId`; kept local so this module stands alone. */
++const DEFAULT_ENTITLEMENT_ID = "plus";
++
++/**
++ * RevenueCat is the receipt layer: the stores verify a purchase, RevenueCat
++ * keeps the subscription, and this server reads the result with a secret key.
++ *
++ * The phone never tells us it is subscribed. It asks us to sync; we ask
++ * RevenueCat; the entitlement in the answer is the only thing that becomes a
++ * membership row. Without REVENUECAT_SECRET_KEY the sync route says so and
++ * grants nothing, which is the safe default for a deployment that has not
++ * finished store setup.
++ */
++
++export interface RevenueCatSettings {
++  apiKey: string;
++  entitlementId: string;
++  baseUrl: string;
++}
++
++export function revenueCatSettings(env: NodeJS.ProcessEnv = process.env): RevenueCatSettings | null {
++  const apiKey = (env.REVENUECAT_SECRET_KEY || "").trim();
++  if (!apiKey) return null;
++  return {
++    apiKey,
++    entitlementId: (env.REVENUECAT_ENTITLEMENT_ID || DEFAULT_ENTITLEMENT_ID).trim(),
++    baseUrl: (env.REVENUECAT_BASE_URL || "https://api.revenuecat.com").replace(/\/+$/, ""),
++  };
++}
++
++export interface RevenueCatEntitlement {
++  expires_date?: string | null;
++  purchase_date?: string | null;
++  product_identifier?: string | null;
++}
++
++export interface RevenueCatSubscriber {
++  entitlements?: Record<string, RevenueCatEntitlement | null>;
++}
++
++export interface SubscriberLookup {
++  subscriber: RevenueCatSubscriber | null;
++}
++
++/** An unknown subscriber is 404, which is simply "no purchases yet". */
++export async function fetchSubscriber(
++  learnerId: string,
++  settings: RevenueCatSettings,
++  fetchImpl: typeof fetch = fetch,
++): Promise<SubscriberLookup> {
++  const response = await fetchImpl(`${settings.baseUrl}/v1/subscribers/${encodeURIComponent(learnerId)}`, {
++    headers: { authorization: `Bearer ${settings.apiKey}`, accept: "application/json" },
++    cache: "no-store",
++  });
++  if (response.status === 404) return { subscriber: null };
++  if (!response.ok) throw new Error(`RevenueCat answered ${response.status}`);
++  const body = (await response.json()) as { subscriber?: RevenueCatSubscriber };
++  return { subscriber: body.subscriber ?? null };
++}
++
++export function membershipFromSubscriber(
++  learnerId: string,
++  lookup: SubscriberLookup,
++  settings: RevenueCatSettings,
++  now = new Date(),
++): Membership | null {
++  const entitlement = lookup.subscriber?.entitlements?.[settings.entitlementId] ?? null;
++  if (!entitlement) return null;
++  const expiresAt = entitlement.expires_date ? new Date(entitlement.expires_date).toISOString() : null;
++  const startedAt = entitlement.purchase_date
++    ? new Date(entitlement.purchase_date).toISOString()
++    : now.toISOString();
++  const current = expiresAt === null || Date.parse(expiresAt) > now.getTime();
++  return {
++    learnerId,
++    plan: "plus",
++    status: current ? "active" : "expired",
++    store: "revenuecat",
++    productId: entitlement.product_identifier ?? null,
++    originalTransactionId: null,
++    startedAt,
++    expiresAt,
++    updatedAt: now.toISOString(),
++    lastEventId: null,
++  };
++}
++
++/** The shape RevenueCat posts to a webhook. */
++export interface RevenueCatEvent {
++  id?: string;
++  type?: string;
++  app_user_id?: string;
++  product_id?: string | null;
++  purchased_at_ms?: number | null;
++  expiration_at_ms?: number | null;
++  original_transaction_id?: string | null;
++  store?: string | null;
++}
++
++/**
++ * Renewals, expirations and refunds arrive here. A cancellation only turns off
++ * auto-renew: the learner keeps what they paid for until `expiration_at_ms`.
++ */
++export function membershipFromEvent(
++  event: RevenueCatEvent,
++  learnerId: string,
++  now = new Date(),
++): Membership | null {
++  const type = (event.type || "").toUpperCase();
++  if (!type) return null;
++  const refunded = type === "REFUND";
++  const expired = type === "EXPIRATION" || type === "SUBSCRIPTION_PAUSED";
++  const expiresAt =
++    typeof event.expiration_at_ms === "number" ? new Date(event.expiration_at_ms).toISOString() : null;
++  const startedAt =
++    typeof event.purchased_at_ms === "number" ? new Date(event.purchased_at_ms).toISOString() : now.toISOString();
++  const store =
++    event.store === "APP_STORE" ? "app_store" : event.store === "PLAY_STORE" ? "play_store" : "revenuecat";
++  return {
++    learnerId,
++    plan: "plus",
++    status: refunded ? "refunded" : expired ? "expired" : "active",
++    store,
++    productId: event.product_id ?? null,
++    originalTransactionId: event.original_transaction_id ?? null,
++    startedAt,
++    expiresAt,
++    updatedAt: now.toISOString(),
++    lastEventId: event.id ?? null,
++  };
++}
+diff --git a/lib/seed.ts b/lib/seed.ts
+index fe2ee63..e607189 100644
+--- a/lib/seed.ts
++++ b/lib/seed.ts
+@@ -1047,6 +1047,8 @@ export function buildSeed(): Database {
+     loginSessions: [],
+     enrollments: [],
+     purchases: [],
++    memberships: [],
++    downloads: [],
+     news: [],
+     courses: Array.from(courses.values()),
+     programs,
+diff --git a/lib/store.ts b/lib/store.ts
+index ba2c0cc..82da9da 100644
+--- a/lib/store.ts
++++ b/lib/store.ts
+@@ -43,6 +43,8 @@ function readFromDisk(): Database | null {
+       enrollment.purchaseId = enrollment.purchaseId ?? null;
+     }
+     if (!Array.isArray(parsed.purchases)) parsed.purchases = [];
++    if (!Array.isArray(parsed.memberships)) parsed.memberships = [];
++    if (!Array.isArray(parsed.downloads)) parsed.downloads = [];
+     if (!Array.isArray(parsed.news)) parsed.news = [];
+     if (!Array.isArray(parsed.learners)) parsed.learners = [];
+     for (const learner of parsed.learners) learner.mailbox = learner.mailbox ?? null;
+diff --git a/lib/types.ts b/lib/types.ts
+index 8366dfb..d42943b 100644
+--- a/lib/types.ts
++++ b/lib/types.ts
+@@ -577,6 +577,28 @@ export interface Activity {
+   actor?: ActorRef | null;
+ }
+ 
++/** A learner's paid or granted membership. One row per learner. */
++export interface Membership {
++  learnerId: string;
++  plan: "plus";
++  status: "active" | "granted" | "expired" | "refunded";
++  store: "app_store" | "play_store" | "revenuecat" | "granted";
++  productId: string | null;
++  originalTransactionId: string | null;
++  startedAt: string;
++  /** null means the grant does not expire (a registrar's decision). */
++  expiresAt: string | null;
++  updatedAt: string;
++  lastEventId: string | null;
++}
++
++/** A course the learner has asked to keep on the device. */
++export interface CourseDownload {
++  learnerId: string;
++  courseId: string;
++  at: string;
++}
++
+ export interface Database {
+   version: number;
+   staff: Staff[];
+@@ -586,6 +608,9 @@ export interface Database {
+   learners: Learner[];
+   enrollments: Enrollment[];
+   purchases: Purchase[];
++  /** Paid or granted memberships, and the offline quota they relax. */
++  memberships: Membership[];
++  downloads: CourseDownload[];
+   completions: Completion[];
+   news: NewsPost[];
+   credentials: Credential[];
+diff --git a/mobile/app.json b/mobile/app.json
+index ba792b9..f5eec88 100644
+--- a/mobile/app.json
++++ b/mobile/app.json
+@@ -2,7 +2,7 @@
+   "expo": {
+     "name": "AthenIQ",
+     "slug": "atheniq",
+-    "version": "1.0.0",
++    "version": "1.1.0",
+     "orientation": "portrait",
+     "icon": "./assets/images/icon.png",
+     "scheme": "atheniq",
+@@ -10,6 +10,7 @@
+     "ios": {
+       "supportsTablet": true,
+       "bundleIdentifier": "institute.atheniq.app",
++      "buildNumber": "2",
+       "infoPlist": {
+         "NSAppTransportSecurity": {
+           "NSAllowsArbitraryLoads": false
+@@ -19,6 +20,7 @@
+     },
+     "android": {
+       "package": "institute.atheniq.app",
++      "versionCode": 2,
+       "adaptiveIcon": {
+         "backgroundColor": "#070f0d",
+         "foregroundImage": "./assets/images/android-icon-foreground.png",
+diff --git a/mobile/app/(tabs)/account.tsx b/mobile/app/(tabs)/account.tsx
+index 7b83b21..823651a 100644
+--- a/mobile/app/(tabs)/account.tsx
++++ b/mobile/app/(tabs)/account.tsx
+@@ -4,12 +4,14 @@ import { useRouter } from "expo-router";
+ import { Body, Button, Card, Chip, Divider, Muted, Screen } from "@/components/ui";
+ import { API_BASE } from "@/lib/api";
+ import { useSession } from "@/lib/session";
++import { usePremium } from "@/lib/premium";
+ import { enableNotifications } from "@/lib/push";
+ import { colors, space, type } from "@/lib/theme";
+ 
+ export default function AccountScreen() {
+   const router = useRouter();
+   const { session, learner, staff, signOut } = useSession();
++  const { isPlus } = usePremium();
+   const [pushNote, setPushNote] = useState("");
+   const [pushBusy, setPushBusy] = useState(false);
+ 
+@@ -54,6 +56,21 @@ export default function AccountScreen() {
+           ) : null}
+         </Card>
+ 
++        {learner ? (
++          <Card style={{ gap: space(2.5) }}>
++            <View style={styles.row}>
++              <Text style={styles.rowLabel}>Plan</Text>
++              <Chip label={isPlus ? "AthenIQ Plus" : "Free"} tone={isPlus ? "brand" : "default"} />
++            </View>
++            <Divider />
++            <Button
++              label={isPlus ? "Manage AthenIQ Plus" : "Upgrade to AthenIQ Plus"}
++              variant={isPlus ? "ghost" : "primary"}
++              onPress={() => router.push("/premium")}
++            />
++          </Card>
++        ) : null}
++
+         {!session ? (
+           <>
+             <Button label="Sign in" onPress={() => router.push("/sign-in")} />
+diff --git a/mobile/app/(tabs)/learning.tsx b/mobile/app/(tabs)/learning.tsx
+index f7b82c9..6ddc8a4 100644
+--- a/mobile/app/(tabs)/learning.tsx
++++ b/mobile/app/(tabs)/learning.tsx
+@@ -18,11 +18,13 @@ import {
+ } from "@/components/ui";
+ import { api, errorMessage, type MyLearning } from "@/lib/api";
+ import { useSession } from "@/lib/session";
++import { usePremium } from "@/lib/premium";
+ import { colors, radius, space, type } from "@/lib/theme";
+ 
+ export default function MyLearningScreen() {
+   const router = useRouter();
+   const { learner } = useSession();
++  const { isPlus } = usePremium();
+   const [data, setData] = useState<MyLearning | null>(null);
+   const [error, setError] = useState("");
+ 
+@@ -96,6 +98,17 @@ export default function MyLearningScreen() {
+           </Card>
+         ) : null}
+ 
++        {learner ? (
++          <Card style={{ gap: space(2.5) }}>
++            <View style={styles.rowBetween}>
++              <Text style={styles.courseTitle}>Study tools</Text>
++              <Chip label={isPlus ? "Plus" : "Plus · locked"} tone={isPlus ? "brand" : "default"} />
++            </View>
++            <Button label="AI study coach" variant="ghost" onPress={() => router.push("/coach")} />
++            <Button label="Insights" variant="ghost" onPress={() => router.push("/insights")} />
++          </Card>
++        ) : null}
++
+         {active.length ? (
+           <>
+             <Text style={styles.section}>CONTINUE</Text>
+diff --git a/mobile/app/_layout.tsx b/mobile/app/_layout.tsx
+index 67337a1..85be888 100644
+--- a/mobile/app/_layout.tsx
++++ b/mobile/app/_layout.tsx
+@@ -2,6 +2,7 @@ import { Stack } from "expo-router";
+ import { StatusBar } from "expo-status-bar";
+ import { SafeAreaProvider } from "react-native-safe-area-context";
+ import { SessionProvider } from "@/lib/session";
++import { PremiumProvider } from "@/lib/premium";
+ import { configureNotificationHandler } from "@/lib/push";
+ import { colors } from "@/lib/theme";
+ 
+@@ -12,18 +13,23 @@ export default function RootLayout() {
+   return (
+     <SafeAreaProvider>
+       <SessionProvider>
+-        <StatusBar style="light" />
+-        <Stack
+-          screenOptions={{
+-            headerShown: false,
+-            contentStyle: { backgroundColor: colors.canvas },
+-            animation: "slide_from_right",
+-          }}
+-        >
+-          <Stack.Screen name="(tabs)" />
+-          <Stack.Screen name="sign-in" options={{ animation: "slide_from_bottom" }} />
+-          <Stack.Screen name="sign-up" options={{ animation: "slide_from_bottom" }} />
+-        </Stack>
++        <PremiumProvider>
++          <StatusBar style="light" />
++          <Stack
++            screenOptions={{
++              headerShown: false,
++              contentStyle: { backgroundColor: colors.canvas },
++              animation: "slide_from_right",
++            }}
++          >
++            <Stack.Screen name="(tabs)" />
++            <Stack.Screen name="sign-in" options={{ animation: "slide_from_bottom" }} />
++            <Stack.Screen name="sign-up" options={{ animation: "slide_from_bottom" }} />
++            <Stack.Screen name="premium" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
++            <Stack.Screen name="coach" />
++            <Stack.Screen name="insights" />
++          </Stack>
++        </PremiumProvider>
+       </SessionProvider>
+     </SafeAreaProvider>
+   );
+diff --git a/mobile/app/coach.tsx b/mobile/app/coach.tsx
+new file mode 100644
+index 0000000..cfc4b51
+--- /dev/null
++++ b/mobile/app/coach.tsx
+@@ -0,0 +1,127 @@
++import { useCallback, useState } from "react";
++import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
++import { useLocalSearchParams, useRouter } from "expo-router";
++import { Body, Button, Card, Chip, ErrorNote, Muted, Screen } from "@/components/ui";
++import { ApiError, api, errorMessage, type CoachReply } from "@/lib/api";
++import { usePremium } from "@/lib/premium";
++import { useSession } from "@/lib/session";
++import { colors, radius, space, type } from "@/lib/theme";
++
++export default function CoachScreen() {
++  const router = useRouter();
++  const { courseId } = useLocalSearchParams<{ courseId?: string }>();
++  const { learner } = useSession();
++  const { isPlus } = usePremium();
++  const [question, setQuestion] = useState("");
++  const [reply, setReply] = useState<CoachReply | null>(null);
++  const [error, setError] = useState("");
++  const [busy, setBusy] = useState(false);
++
++  const ask = useCallback(async () => {
++    if (!learner || question.trim().length < 4) return;
++    setBusy(true);
++    setError("");
++    try {
++      setReply(await api.coach(learner.token, { question: question.trim(), courseId: courseId || undefined }));
++    } catch (caught) {
++      if (caught instanceof ApiError && caught.status === 402) {
++        setError("The study coach is part of AthenIQ Plus.");
++      } else {
++        setError(errorMessage(caught));
++      }
++    } finally {
++      setBusy(false);
++    }
++  }, [learner, question, courseId]);
++
++  if (!learner) {
++    return (
++      <Screen>
++        <ScrollView contentContainerStyle={styles.content}>
++          <Text style={styles.eyebrow}>STUDY COACH</Text>
++          <Text style={styles.title}>Ask about the lesson in front of you</Text>
++          <Body>Sign in to keep the coach tied to your courses and your progress.</Body>
++          <Button label="Sign in" onPress={() => router.push("/sign-in")} />
++        </ScrollView>
++      </Screen>
++    );
++  }
++
++  if (!isPlus) {
++    return (
++      <Screen>
++        <ScrollView contentContainerStyle={styles.content}>
++          <Text style={styles.eyebrow}>STUDY COACH</Text>
++          <Text style={styles.title}>A coach that has read the course</Text>
++          <Card style={{ gap: space(2) }}>
++            <Body>
++              The coach answers from the course record: its outcomes, its modules and the lesson you
++              are on. It will not invent a grade or a deadline — those are the registrar's.
++            </Body>
++            <Chip label="AthenIQ Plus" tone="brand" />
++          </Card>
++          <Button label="See AthenIQ Plus" onPress={() => router.push("/premium")} />
++          <Button label="Back" variant="quiet" onPress={() => router.back()} />
++        </ScrollView>
++      </Screen>
++    );
++  }
++
++  return (
++    <Screen>
++      <KeyboardAvoidingView
++        style={{ flex: 1 }}
++        behavior={Platform.OS === "ios" ? "padding" : undefined}
++        keyboardVerticalOffset={24}
++      >
++        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
++          <Text style={styles.eyebrow}>STUDY COACH</Text>
++          <Text style={styles.title}>What are you stuck on?</Text>
++          <Muted>{courseId ? "Answers use this course's record." : "Open a course first for answers grounded in it."}</Muted>
++
++          {error ? <ErrorNote message={error} /> : null}
++
++          {reply ? (
++            <Card style={{ gap: space(2) }}>
++              <Chip label={reply.source === "model" ? "Coach" : "Course-based plan"} tone="brand" />
++              <Body>{reply.answer}</Body>
++            </Card>
++          ) : null}
++
++          <TextInput
++            value={question}
++            onChangeText={setQuestion}
++            placeholder="e.g. I do not understand why gradient descent needs a learning rate"
++            placeholderTextColor={colors.faint}
++            multiline
++            style={styles.input}
++          />
++          <Button
++            label="Ask the coach"
++            onPress={ask}
++            loading={busy}
++            disabled={question.trim().length < 4}
++          />
++          <Button label="Back" variant="quiet" onPress={() => router.back()} />
++        </ScrollView>
++      </KeyboardAvoidingView>
++    </Screen>
++  );
++}
++
++const styles = StyleSheet.create({
++  content: { padding: space(5), paddingBottom: space(16), gap: space(3.5) },
++  eyebrow: { ...type.tiny, color: colors.brand, fontWeight: "700", letterSpacing: 1.4 },
++  title: { ...type.display, fontSize: 27, lineHeight: 32, color: colors.ink },
++  input: {
++    minHeight: 120,
++    textAlignVertical: "top",
++    borderRadius: radius.md,
++    borderWidth: 1,
++    borderColor: colors.lineStrong,
++    backgroundColor: colors.surface,
++    color: colors.ink,
++    padding: space(3),
++    ...type.body,
++  },
++});
+diff --git a/mobile/app/course/[id].tsx b/mobile/app/course/[id].tsx
+index 97cd19f..c35a2b0 100644
+--- a/mobile/app/course/[id].tsx
++++ b/mobile/app/course/[id].tsx
+@@ -15,7 +15,7 @@ import {
+   Muted,
+   ProgressBar,
+ } from "@/components/ui";
+-import { api, errorMessage, priceLabel, type CourseDetail, type PurchaseInfo } from "@/lib/api";
++import { ApiError, api, errorMessage, priceLabel, type CourseDetail, type PurchaseInfo } from "@/lib/api";
+ import { useSession } from "@/lib/session";
+ import { downloadCourse, readCourse, removeCourse, type CachedCourse } from "@/lib/offline";
+ import { colors, radius, space, type } from "@/lib/theme";
+@@ -35,6 +35,7 @@ export default function CourseScreen() {
+   const [cached, setCached] = useState<CachedCourse | null>(null);
+   const [downloading, setDownloading] = useState(false);
+   const [fromCache, setFromCache] = useState(false);
++  const [upgrade, setUpgrade] = useState(false);
+ 
+   const load = useCallback(async () => {
+     const stored = await readCourse(id);
+@@ -119,12 +120,18 @@ export default function CourseScreen() {
+   const download = async () => {
+     if (!learner || !course) return;
+     setDownloading(true);
++    setUpgrade(false);
+     try {
+       const stored = await downloadCourse(course.id, learner.token);
+       setCached(stored);
+       setNotice(`Downloaded ${stored.lessons.length} lessons for offline reading.`);
+     } catch (caught) {
+-      setError(errorMessage(caught));
++      if (caught instanceof ApiError && caught.payload.upgrade === "plus") {
++        setNotice(errorMessage(caught));
++        setUpgrade(true);
++      } else {
++        setError(errorMessage(caught));
++      }
+     } finally {
+       setDownloading(false);
+     }
+@@ -312,6 +319,9 @@ export default function CourseScreen() {
+                 loading={downloading}
+               />
+             )}
++            {upgrade ? (
++              <Button label="See AthenIQ Plus" variant="quiet" onPress={() => router.push("/premium")} />
++            ) : null}
+           </Card>
+         )}
+ 
+diff --git a/mobile/app/insights.tsx b/mobile/app/insights.tsx
+new file mode 100644
+index 0000000..5d91fd5
+--- /dev/null
++++ b/mobile/app/insights.tsx
+@@ -0,0 +1,144 @@
++import { useCallback, useState } from "react";
++import { ScrollView, StyleSheet, Text, View } from "react-native";
++import { useFocusEffect, useRouter } from "expo-router";
++import { Body, Button, Card, Divider, ErrorNote, Muted, ProgressBar, Screen, Stat } from "@/components/ui";
++import { ApiError, api, errorMessage, type Insights } from "@/lib/api";
++import { usePremium } from "@/lib/premium";
++import { useSession } from "@/lib/session";
++import { colors, space, type } from "@/lib/theme";
++
++export default function InsightsScreen() {
++  const router = useRouter();
++  const { learner } = useSession();
++  const { isPlus } = usePremium();
++  const [data, setData] = useState<Insights | null>(null);
++  const [error, setError] = useState("");
++  const [locked, setLocked] = useState(false);
++
++  const load = useCallback(async () => {
++    if (!learner) return;
++    try {
++      setData(await api.insights(learner.token));
++      setLocked(false);
++      setError("");
++    } catch (caught) {
++      if (caught instanceof ApiError && caught.status === 402) setLocked(true);
++      else setError(errorMessage(caught));
++    }
++  }, [learner]);
++
++  useFocusEffect(
++    useCallback(() => {
++      load();
++    }, [load]),
++  );
++
++  if (!learner) {
++    return (
++      <Screen>
++        <ScrollView contentContainerStyle={styles.content}>
++          <Text style={styles.eyebrow}>INSIGHTS</Text>
++          <Text style={styles.title}>See the shape of your study</Text>
++          <Button label="Sign in" onPress={() => router.push("/sign-in")} />
++        </ScrollView>
++      </Screen>
++    );
++  }
++
++  if (locked || !isPlus) {
++    return (
++      <Screen>
++        <ScrollView contentContainerStyle={styles.content}>
++          <Text style={styles.eyebrow}>INSIGHTS</Text>
++          <Text style={styles.title}>Pace, focus, and what is left</Text>
++          <Card>
++            <Body>
++              Insights show how many lessons a week you are finishing, how much reading remains, and
++              the modules that need another pass. Part of AthenIQ Plus.
++            </Body>
++          </Card>
++          <Button label="See AthenIQ Plus" onPress={() => router.push("/premium")} />
++          <Button label="Back" variant="quiet" onPress={() => router.back()} />
++        </ScrollView>
++      </Screen>
++    );
++  }
++
++  return (
++    <Screen>
++      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
++        <Text style={styles.eyebrow}>INSIGHTS</Text>
++        <Text style={styles.title}>Your study, in numbers</Text>
++        {error ? <ErrorNote message={error} /> : null}
++
++        {data ? (
++          <>
++            <Card style={{ gap: space(3) }}>
++              <View style={styles.row}>
++                <Stat label="Lessons done" value={data.totals.lessonsDone} />
++                <Stat label="Minutes left" value={data.totals.minutesRemaining} />
++              </View>
++              <Divider />
++              <View style={styles.row}>
++                <Stat label="Active" value={data.totals.active} />
++                <Stat label="Credits" value={data.totals.credits} />
++              </View>
++            </Card>
++
++            {data.note ? <Muted>{data.note}</Muted> : null}
++
++            {data.courses.length ? (
++              <>
++                <Text style={styles.section}>COURSES</Text>
++                {data.courses.map((course) => (
++                  <Card key={course.id} style={{ gap: space(1.5) }}>
++                    <View style={styles.rowBetween}>
++                      <Text style={styles.code}>{course.code}</Text>
++                      <Text style={styles.percent}>{course.percent}%</Text>
++                    </View>
++                    <Text style={styles.courseTitle}>{course.title}</Text>
++                    <ProgressBar percent={course.percent} />
++                    <Muted>
++                      {course.done} of {course.total} lessons · {course.pacePerWeek}/week ·{" "}
++                      {course.remainingMinutes} min left
++                    </Muted>
++                  </Card>
++                ))}
++              </>
++            ) : null}
++
++            {data.focus.length ? (
++              <>
++                <Text style={styles.section}>NEEDS ANOTHER PASS</Text>
++                {data.focus.map((item) => (
++                  <Card key={`${item.courseId}-${item.module}`} style={{ gap: space(1) }}>
++                    <Text style={styles.courseTitle}>{item.module}</Text>
++                    <Muted>
++                      {item.course} · {item.percent}% complete
++                    </Muted>
++                  </Card>
++                ))}
++              </>
++            ) : null}
++          </>
++        ) : (
++          <Muted>Loading your insights…</Muted>
++        )}
++
++        <Button label="Back" variant="quiet" onPress={() => router.back()} />
++      </ScrollView>
++    </Screen>
++  );
++}
++
++const styles = StyleSheet.create({
++  content: { padding: space(5), paddingBottom: space(16), gap: space(3.5) },
++  eyebrow: { ...type.tiny, color: colors.brand, fontWeight: "700", letterSpacing: 1.4 },
++  title: { ...type.display, fontSize: 27, lineHeight: 32, color: colors.ink },
++  row: { flexDirection: "row", gap: space(3) },
++  rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
++  section: { ...type.tiny, color: colors.faint, fontWeight: "700", letterSpacing: 1.2, marginTop: space(3) },
++  code: { ...type.tiny, color: colors.brandSoft, fontWeight: "700", letterSpacing: 1 },
++  percent: { ...type.small, color: colors.soft, fontWeight: "700" },
++  courseTitle: { ...type.heading, color: colors.ink },
++});
+diff --git a/mobile/app/premium.tsx b/mobile/app/premium.tsx
+new file mode 100644
+index 0000000..6e67146
+--- /dev/null
++++ b/mobile/app/premium.tsx
+@@ -0,0 +1,187 @@
++import { useCallback, useEffect, useState } from "react";
++import { Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
++import { useRouter } from "expo-router";
++import * as WebBrowser from "expo-web-browser";
++import { Body, Button, Card, Chip, Divider, ErrorNote, Muted, Screen } from "@/components/ui";
++import { errorMessage } from "@/lib/api";
++import { usePremium } from "@/lib/premium";
++import { storePackages, type StorePackage } from "@/lib/purchases";
++import { useSession } from "@/lib/session";
++import { colors, space, type } from "@/lib/theme";
++
++const BENEFITS = [
++  ["The whole library, offline", "Keep every course you are enrolled in on the phone, not just one."],
++  ["AI study coach", "Ask about the lesson in front of you; the coach answers from the course record."],
++  ["Study analytics", "Pace, what is left, and the modules that need another pass."],
++  ["Priority registrar review", "Certificate requests from members are queued first."],
++] as const;
++
++const FALLBACK_PLANS = [
++  { id: "institute.atheniq.plus.monthly", label: "AthenIQ Plus · monthly", period: "month" },
++  { id: "institute.atheniq.plus.yearly", label: "AthenIQ Plus · yearly", period: "year" },
++];
++
++export default function PremiumScreen() {
++  const router = useRouter();
++  const { learner } = useSession();
++  const { premium, isPlus, available, buy, restore, purchasing } = usePremium();
++  const [packages, setPackages] = useState<StorePackage[]>([]);
++  const [notice, setNotice] = useState("");
++  const [error, setError] = useState("");
++  const [restoring, setRestoring] = useState(false);
++
++  useEffect(() => {
++    storePackages()
++      .then(setPackages)
++      .catch(() => setPackages([]));
++  }, []);
++
++  const purchase = useCallback(
++    async (productId: string) => {
++      setError("");
++      setNotice("");
++      try {
++        const result = await buy(productId);
++        if (result.cancelled) setNotice("Purchase cancelled. Nothing was charged.");
++        else setNotice("Welcome to AthenIQ Plus. Everything below is unlocked.");
++      } catch (caught) {
++        setError(errorMessage(caught));
++      }
++    },
++    [buy],
++  );
++
++  const restorePurchases = useCallback(async () => {
++    setError("");
++    setNotice("");
++    setRestoring(true);
++    try {
++      await restore();
++      setNotice("Purchases restored.");
++    } catch (caught) {
++      setError(errorMessage(caught));
++    } finally {
++      setRestoring(false);
++    }
++  }, [restore]);
++
++  const manage = () => {
++    const url =
++      Platform.OS === "ios"
++        ? "https://apps.apple.com/account/subscriptions"
++        : "https://play.google.com/store/account/subscriptions";
++    Linking.openURL(url).catch(() => undefined);
++  };
++
++  const plans = (premium?.products ?? FALLBACK_PLANS).map((plan) => ({
++    ...plan,
++    price: packages.find((item) => item.productId === plan.id)?.priceString ?? null,
++  }));
++
++  return (
++    <Screen>
++      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
++        <Text style={styles.eyebrow}>ATHENIQ PLUS</Text>
++        <Text style={styles.title}>{isPlus ? "You are a member" : "Study further, on the phone"}</Text>
++        <Muted>
++          The app stays free: browse, enroll, read every lesson, keep your progress and collect
++          certificates. Plus adds the things that make a phone a study tool.
++        </Muted>
++
++        {premium?.status === "expired" && !isPlus ? (
++          <Card><Body>Your Plus membership has ended. Your courses, progress and certificates are untouched.</Body></Card>
++        ) : null}
++
++        {error ? <ErrorNote message={error} /> : null}
++        {notice ? <Muted>{notice}</Muted> : null}
++
++        {isPlus ? (
++          <Card style={{ gap: space(2) }}>
++            <View style={styles.row}>
++              <Text style={styles.planName}>AthenIQ Plus</Text>
++              <Chip label={premium?.status === "granted" ? "Granted" : "Active"} tone="brand" />
++            </View>
++            {premium?.expiresAt ? (
++              <Muted>Renews or ends {new Date(premium.expiresAt).toLocaleDateString()}.</Muted>
++            ) : (
++              <Muted>This membership does not expire.</Muted>
++            )}
++            <Divider />
++            <Button label="Manage subscription" variant="ghost" onPress={manage} />
++          </Card>
++        ) : null}
++
++        <Card style={{ gap: space(3) }}>
++          {BENEFITS.map(([title, detail]) => (
++            <View key={title} style={{ gap: space(0.5) }}>
++              <Text style={styles.benefitTitle}>{title}</Text>
++              <Muted>{detail}</Muted>
++            </View>
++          ))}
++        </Card>
++
++        {!isPlus ? (
++          <Card style={{ gap: space(2.5) }}>
++            {plans.map((plan) => (
++              <View key={plan.id} style={{ gap: space(1.5) }}>
++                <View style={styles.row}>
++                  <Text style={styles.planName}>{plan.period === "year" ? "Yearly" : "Monthly"}</Text>
++                  <Text style={styles.price}>{plan.price ?? (plan.period === "year" ? "Annual" : "Monthly")}</Text>
++                </View>
++                <Button
++                  label={plan.price ? `Subscribe · ${plan.price}` : "Subscribe"}
++                  onPress={() => purchase(plan.id)}
++                  loading={purchasing === plan.id}
++                  disabled={!learner || Boolean(purchasing)}
++                />
++              </View>
++            ))}
++            {!available || !premium?.storeConfigured ? (
++              <Muted>
++                Subscriptions open in the App Store and Play Store builds. This build cannot take a
++                payment.
++              </Muted>
++            ) : null}
++            <Muted>
++              Payment is charged to your store account at confirmation. A subscription renews unless
++              it is cancelled at least 24 hours before the period ends. Manage or cancel it in your
++              store account.
++            </Muted>
++            <Divider />
++            <Button
++              label="Restore purchases"
++              variant="ghost"
++              onPress={restorePurchases}
++              loading={restoring}
++              disabled={!learner}
++            />
++            <View style={styles.legal}>
++              <Text style={styles.legalLink} onPress={() => WebBrowser.openBrowserAsync("https://atheniq.institute/terms")}>
++                Terms of use
++              </Text>
++              <Text style={styles.legalDot}>·</Text>
++              <Text style={styles.legalLink} onPress={() => WebBrowser.openBrowserAsync("https://atheniq.institute/privacy")}>
++                Privacy policy
++              </Text>
++            </View>
++          </Card>
++        ) : null}
++
++        <Button label="Back" variant="quiet" onPress={() => router.back()} />
++      </ScrollView>
++    </Screen>
++  );
++}
++
++const styles = StyleSheet.create({
++  content: { padding: space(5), paddingBottom: space(16), gap: space(3.5) },
++  eyebrow: { ...type.tiny, color: colors.brand, fontWeight: "700", letterSpacing: 1.4 },
++  title: { ...type.display, fontSize: 27, lineHeight: 32, color: colors.ink },
++  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space(2) },
++  planName: { ...type.heading, color: colors.ink },
++  price: { ...type.small, color: colors.brandSoft, fontWeight: "700" },
++  benefitTitle: { ...type.heading, color: colors.ink, fontSize: 15.5 },
++  legal: { flexDirection: "row", justifyContent: "center", gap: space(2) },
++  legalLink: { ...type.small, color: colors.info, textDecorationLine: "underline" },
++  legalDot: { ...type.small, color: colors.faint },
++});
+diff --git a/mobile/eas.json b/mobile/eas.json
+new file mode 100644
+index 0000000..67c9573
+--- /dev/null
++++ b/mobile/eas.json
+@@ -0,0 +1,38 @@
++{
++  "cli": {
++    "version": ">= 16.0.0",
++    "appVersionSource": "remote"
++  },
++  "build": {
++    "development": {
++      "developmentClient": true,
++      "distribution": "internal",
++      "channel": "development",
++      "env": {
++        "EXPO_PUBLIC_API_BASE": "https://registrar.atheniq.institute"
++      }
++    },
++    "preview": {
++      "distribution": "internal",
++      "channel": "preview",
++      "env": {
++        "EXPO_PUBLIC_API_BASE": "https://registrar.atheniq.institute"
++      }
++    },
++    "production": {
++      "channel": "production",
++      "autoIncrement": true
++    }
++  },
++  "submit": {
++    "production": {
++      "ios": {
++        "ascAppId": "6835960485",
++        "teamId": "BH7WW2BR39"
++      },
++      "android": {
++        "track": "internal"
++      }
++    }
++  }
++}
+diff --git a/mobile/lib/api.ts b/mobile/lib/api.ts
+index ba82754..379438b 100644
+--- a/mobile/lib/api.ts
++++ b/mobile/lib/api.ts
+@@ -144,6 +144,7 @@ export interface StaffSession {
+ }
+ 
+ export interface MyLearning {
++  premium?: PremiumState;
+   learner: {
+     id: string;
+     name: string;
+@@ -189,6 +190,65 @@ export interface OfflineBundle {
+   curriculum: { id: string; title: string; lessons: { id: string; title: string; type: string; minutes: number; module: string }[] }[];
+ }
+ 
++/**
++ * AthenIQ Plus.
++ *
++ * The server decides the plan; the app only draws it. `limit: null` means no
++ * limit, which is what Plus gets for offline courses.
++ */
++export interface PremiumState {
++  plan: "free" | "plus";
++  status: "free" | "active" | "granted" | "expired" | "refunded";
++  source: string | null;
++  productId: string | null;
++  startedAt: string | null;
++  expiresAt: string | null;
++  features: {
++    offlineCourses: number | null;
++    coach: boolean;
++    analytics: boolean;
++    priorityReview: boolean;
++  };
++  offline: { used: number; limit: number | null };
++  products: { id: string; label: string; period: string }[];
++  storeConfigured?: boolean;
++}
++
++export interface CoachReply {
++  answer: string;
++  source: "model" | "rules";
++  courseId: string | null;
++}
++
++export interface Insights {
++  generatedAt: string;
++  totals: {
++    enrolled: number;
++    active: number;
++    completed: number;
++    credits: number;
++    lessonsDone: number;
++    minutesRemaining: number;
++    daysSinceLastStudy: number | null;
++  };
++  courses: {
++    id: string;
++    code: string;
++    title: string;
++    percent: number;
++    done: number;
++    total: number;
++    credits: number;
++    completedAt: string | null;
++    enrolledAt: string;
++    pacePerWeek: number;
++    remainingMinutes: number;
++    lastSeenAt: string;
++  }[];
++  focus: { courseId: string; course: string; module: string; percent: number }[];
++  note: string | null;
++}
++
+ export interface RegistrarOverview {
+   staff: { id: string; name: string; email: string; role: string };
+   counts: {
+@@ -290,6 +350,12 @@ export const api = {
+       body,
+       token,
+     }),
++  premium: (token: string) => request<PremiumState>("/premium", { token }),
++  syncPremium: (token: string) =>
++    request<PremiumState>("/premium/sync", { method: "POST", token }),
++  coach: (token: string, body: { question: string; courseId?: string; lessonId?: string }) =>
++    request<CoachReply>("/coach", { method: "POST", body, token }),
++  insights: (token: string) => request<Insights>("/analytics", { token }),
+   registrar: (token: string) => request<RegistrarOverview>("/registrar", { token }),
+   issue: (token: string, credentialId: string) =>
+     request<{ credentialId: string; status: string; verifyId?: string }>("/registrar/issue", {
+diff --git a/mobile/lib/premium.tsx b/mobile/lib/premium.tsx
+new file mode 100644
+index 0000000..8b9c368
+--- /dev/null
++++ b/mobile/lib/premium.tsx
+@@ -0,0 +1,127 @@
++import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
++import { api, errorMessage, type PremiumState } from "./api";
++import {
++  configurePurchases,
++  purchaseProduct,
++  purchasesConfigured,
++  restorePurchases,
++} from "./purchases";
++import { useSession } from "./session";
++
++/**
++ * The learner's plan, as the server reports it.
++ *
++ * Nothing here decides access: the coach, analytics and offline quota are
++ * checked again on the server for every call. This context exists so the app
++ * can show the right label, hide a dead end behind a paywall, and refresh the
++ * plan after a purchase or a restore.
++ */
++interface PremiumContextValue {
++  premium: PremiumState | null;
++  loading: boolean;
++  error: string;
++  purchasing: string | null;
++  /** True when this build has public store keys. */
++  available: boolean;
++  /** True when the server can verify receipts. */
++  storeConfigured: boolean;
++  isPlus: boolean;
++  refresh: () => Promise<void>;
++  buy: (productId: string) => Promise<{ purchased: boolean; cancelled: boolean }>;
++  restore: () => Promise<void>;
++}
++
++const Context = createContext<PremiumContextValue | null>(null);
++
++/**
++ * RevenueCat's app user id is the learner id. Sessions stored before the id was
++ * kept fall back to the email, which the webhook also accepts.
++ */
++function appUserId(learner: { id?: string; email: string }): string {
++  return learner.id || learner.email;
++}
++
++export function PremiumProvider({ children }: { children: React.ReactNode }) {
++  const { learner } = useSession();
++  const [premium, setPremium] = useState<PremiumState | null>(null);
++  const [loading, setLoading] = useState(false);
++  const [error, setError] = useState("");
++  const [purchasing, setPurchasing] = useState<string | null>(null);
++
++  const refresh = useCallback(async () => {
++    if (!learner) {
++      setPremium(null);
++      setError("");
++      return;
++    }
++    setLoading(true);
++    try {
++      setPremium(await api.premium(learner.token));
++      setError("");
++    } catch (caught) {
++      setError(errorMessage(caught));
++    } finally {
++      setLoading(false);
++    }
++  }, [learner]);
++
++  useEffect(() => {
++    if (!learner) {
++      setPremium(null);
++      return;
++    }
++    configurePurchases(appUserId(learner));
++    refresh();
++  }, [learner, refresh]);
++
++  const buy = useCallback(
++    async (productId: string) => {
++      if (!learner) throw new Error("Sign in first.");
++      if (!configurePurchases(appUserId(learner))) {
++        throw new Error("Subscriptions are available in the App Store and Play Store builds.");
++      }
++      setPurchasing(productId);
++      try {
++        const result = await purchaseProduct(productId);
++        if (result.purchased) setPremium(await api.syncPremium(learner.token));
++        return result;
++      } finally {
++        setPurchasing(null);
++      }
++    },
++    [learner],
++  );
++
++  const restore = useCallback(async () => {
++    if (!learner) throw new Error("Sign in first.");
++    if (!configurePurchases(appUserId(learner))) {
++      throw new Error("Subscriptions are available in the App Store and Play Store builds.");
++    }
++    await restorePurchases();
++    setPremium(await api.syncPremium(learner.token));
++  }, [learner]);
++
++  const value = useMemo<PremiumContextValue>(
++    () => ({
++      premium,
++      loading,
++      error,
++      purchasing,
++      available: purchasesConfigured,
++      storeConfigured: premium?.storeConfigured !== false,
++      isPlus: premium?.plan === "plus",
++      refresh,
++      buy,
++      restore,
++    }),
++    [premium, loading, error, purchasing, refresh, buy, restore],
++  );
++
++  return <Context.Provider value={value}>{children}</Context.Provider>;
++}
++
++export function usePremium(): PremiumContextValue {
++  const value = useContext(Context);
++  if (!value) throw new Error("usePremium must be used inside PremiumProvider");
++  return value;
++}
+diff --git a/mobile/lib/purchases.ts b/mobile/lib/purchases.ts
+new file mode 100644
+index 0000000..f4f0d4c
+--- /dev/null
++++ b/mobile/lib/purchases.ts
+@@ -0,0 +1,76 @@
++import { Platform } from "react-native";
++import Purchases, { LOG_LEVEL, type PurchasesPackage } from "react-native-purchases";
++
++/**
++ * The store, in one place.
++ *
++ * RevenueCat wraps StoreKit and Play Billing, so the app asks for a package and
++ * hands the result to the server to record. The public SDK key is baked in at
++ * build time; without it the paywall says subscriptions are not available in
++ * this build rather than failing at random. Expo Go runs RevenueCat in preview
++ * mode — the code loads, but real purchases need a development or store build.
++ */
++const IOS_KEY = (process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY || "").trim();
++const ANDROID_KEY = (process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY || "").trim();
++
++const apiKey = Platform.OS === "ios" ? IOS_KEY : Platform.OS === "android" ? ANDROID_KEY : "";
++export const purchasesConfigured = Boolean(apiKey);
++
++let configuredFor: string | null = null;
++
++/** Configure once per learner id: the id is how the server finds the receipt. */
++export function configurePurchases(learnerId: string): boolean {
++  if (!apiKey) return false;
++  if (configuredFor === learnerId) return true;
++  Purchases.configure({ apiKey, appUserID: learnerId });
++  if (typeof __DEV__ !== "undefined" && __DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
++  configuredFor = learnerId;
++  return true;
++}
++
++export interface StorePackage {
++  identifier: string;
++  productId: string;
++  priceString: string;
++  title: string;
++}
++
++export async function storePackages(): Promise<StorePackage[]> {
++  if (!apiKey) return [];
++  const offerings = await Purchases.getOfferings();
++  const packages = offerings.current?.availablePackages ?? [];
++  return packages.map((pkg: PurchasesPackage) => ({
++    identifier: pkg.identifier,
++    productId: pkg.product.identifier,
++    priceString: pkg.product.priceString,
++    title: pkg.product.title,
++  }));
++}
++
++function cancelled(error: unknown): boolean {
++  const value = error as { userCancelled?: boolean; code?: string } | null;
++  return Boolean(value?.userCancelled) || value?.code === "1";
++}
++
++export async function purchaseProduct(
++  productId: string,
++): Promise<{ purchased: boolean; cancelled: boolean }> {
++  if (!apiKey) throw new Error("Subscriptions are available in the App Store and Play Store builds.");
++  const offerings = await Purchases.getOfferings();
++  const pkg = (offerings.current?.availablePackages ?? []).find(
++    (item) => item.product.identifier === productId,
++  );
++  if (!pkg) throw new Error("That plan is not available in this store yet.");
++  try {
++    await Purchases.purchasePackage(pkg);
++    return { purchased: true, cancelled: false };
++  } catch (error) {
++    if (cancelled(error)) return { purchased: false, cancelled: true };
++    throw error;
++  }
++}
++
++export async function restorePurchases(): Promise<void> {
++  if (!apiKey) throw new Error("Subscriptions are available in the App Store and Play Store builds.");
++  await Purchases.restorePurchases();
++}
+diff --git a/mobile/lib/session.tsx b/mobile/lib/session.tsx
+index 480262c..0c1cb0c 100644
+--- a/mobile/lib/session.tsx
++++ b/mobile/lib/session.tsx
+@@ -16,6 +16,8 @@ const KEY = "atheniq.session";
+ export interface StoredSession {
+   role: "learner" | "staff";
+   token: string;
++  /** The learner id the server knows; also the RevenueCat app user id. */
++  id?: string;
+   name: string;
+   email: string;
+   staffRole?: "registrar" | "publisher";
+@@ -77,6 +79,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
+     const next: StoredSession = {
+       role: "learner",
+       token: result.token,
++      id: result.learner.id,
+       name: result.learner.name,
+       email: result.learner.email,
+       programId: result.learner.programId,
+diff --git a/mobile/package-lock.json b/mobile/package-lock.json
+index cc7fbf6..e98a4c7 100644
+--- a/mobile/package-lock.json
++++ b/mobile/package-lock.json
+@@ -24,6 +24,7 @@
+         "react": "19.3.0",
+         "react-dom": "19.3.0",
+         "react-native": "0.88.1",
++        "react-native-purchases": "^11.0.5",
+         "react-native-reanimated": "4.7.1",
+         "react-native-safe-area-context": "~5.11.1",
+         "react-native-screens": "~4.30.1",
+@@ -2566,6 +2567,27 @@
+         }
+       }
+     },
++    "node_modules/@revenuecat/purchases-js": {
++      "version": "1.78.1",
++      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-js/-/purchases-js-1.78.1.tgz",
++      "integrity": "sha512-ezNgnA3Y2lng21o3eDl3bpEdxQePC7ecvxXXoztMqBDj47UPaU0CoB8u2wBo8Vt2iJMGW6aFkXBjjkCG0jI4Ow==",
++      "license": "MIT"
++    },
++    "node_modules/@revenuecat/purchases-js-hybrid-mappings": {
++      "version": "20.14.0",
++      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-js-hybrid-mappings/-/purchases-js-hybrid-mappings-20.14.0.tgz",
++      "integrity": "sha512-ISTzZb4vceWe7d1odOzPszUHsfuRpv0iMseBbXXkrYiN757qyHrTwY92EQCIAMkFoRAlBuKuRNqf5elqGL6+sg==",
++      "license": "MIT",
++      "dependencies": {
++        "@revenuecat/purchases-js": "1.78.1"
++      }
++    },
++    "node_modules/@revenuecat/purchases-typescript-internal": {
++      "version": "20.14.0",
++      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-typescript-internal/-/purchases-typescript-internal-20.14.0.tgz",
++      "integrity": "sha512-MhhPh14pGIiTj3AkrrV+uGt+2xmvGKrDMn2jAUt5C+6Nf3SzxOfu6nLVJYVMF8oTf0DekixuXnhh6Fo8VStaZg==",
++      "license": "MIT"
++    },
+     "node_modules/@sinclair/typebox": {
+       "version": "0.27.12",
+       "resolved": "https://registry.npmjs.org/@sinclair/typebox/-/typebox-0.27.12.tgz",
+@@ -6566,6 +6588,33 @@
+         "react-native": "*"
+       }
+     },
++    "node_modules/react-native-purchases": {
++      "version": "11.0.5",
++      "resolved": "https://registry.npmjs.org/react-native-purchases/-/react-native-purchases-11.0.5.tgz",
++      "integrity": "sha512-YGJtzpc6JS5b30v3FSxTS1A4vUIU0naqXF3plvkNrBK2LekdYX2QG/ngwDiayu71f24MHWfzrG1JIVbz27lRrg==",
++      "license": "MIT",
++      "workspaces": [
++        "examples/purchaseTesterTypescript",
++        "react-native-purchases-admob",
++        "react-native-purchases-store-galaxy",
++        "react-native-purchases-ui",
++        "e2e-tests/MaestroTestApp"
++      ],
++      "dependencies": {
++        "@revenuecat/purchases-js-hybrid-mappings": "20.14.0",
++        "@revenuecat/purchases-typescript-internal": "20.14.0"
++      },
++      "peerDependencies": {
++        "react": ">= 16.6.3",
++        "react-native": ">= 0.80.0",
++        "react-native-web": "*"
++      },
++      "peerDependenciesMeta": {
++        "react-native-web": {
++          "optional": true
++        }
++      }
++    },
+     "node_modules/react-native-reanimated": {
+       "version": "4.7.1",
+       "resolved": "https://registry.npmjs.org/react-native-reanimated/-/react-native-reanimated-4.7.1.tgz",
+diff --git a/mobile/package.json b/mobile/package.json
+index 4902512..7976621 100644
+--- a/mobile/package.json
++++ b/mobile/package.json
+@@ -19,6 +19,7 @@
+     "react": "19.3.0",
+     "react-dom": "19.3.0",
+     "react-native": "0.88.1",
++    "react-native-purchases": "^11.0.5",
+     "react-native-reanimated": "4.7.1",
+     "react-native-safe-area-context": "~5.11.1",
+     "react-native-screens": "~4.30.1",
+diff --git a/mobile/store/premium.md b/mobile/store/premium.md
+new file mode 100644
+index 0000000..e25e1ae
+--- /dev/null
++++ b/mobile/store/premium.md
+@@ -0,0 +1,111 @@
++# AthenIQ Plus — products, setup and submission
++
++The app is free. **AthenIQ Plus** is an auto-renewable subscription that adds
++the tools a phone can offer a student: the whole library offline, an AI study
++coach, and study analytics. Nothing already in the free tier is taken away.
++
++| | Free | Plus |
++| --- | --- | --- |
++| Browse the catalog | yes | yes |
++| Enroll in a free course and read every lesson | yes | yes |
++| Progress and certificates | yes | yes |
++| Courses kept offline | 1 | unlimited |
++| AI study coach | — | yes |
++| Study analytics (pace, remaining work, weak modules) | — | yes |
++| Registrar queue priority for certificate requests | — | yes |
++
++## Products
++
++Create these in App Store Connect and Google Play Console, then point a
++RevenueCat project at both stores.
++
++| Product id | Type | Duration | Price (USD) |
++| --- | --- | --- | --- |
++| `institute.atheniq.plus.monthly` | auto-renewable | 1 month | 9.99 |
++| `institute.atheniq.plus.yearly` | auto-renewable | 1 year | 79.99 |
++
++Both belong to one subscription group, `AthenIQ Plus`, so a learner can move
++between them without being subscribed twice. The yearly product is 33% cheaper
++than twelve months — say so in the App Store "promotional text", not as a fake
++discount.
++
++The Android products use the same ids and the same base prices; Play converts
++to local currency.
++
++### Trial
++
++If an introductory offer is wanted, configure **7 days free on the yearly
++product only** in App Store Connect and Play Console. Do not hard-code a trial
++in the app: the store reports eligibility, and RevenueCat carries it.
++
++## RevenueCat
++
++1. Create a project, add the iOS app (`institute.atheniq.app`) and the Android
++   app (`institute.atheniq.app`).
++2. Add the two products, then an entitlement named **`plus`** attached to both.
++3. Add one offering, `default`, with a `$rc_monthly` and `$rc_annual` package
++   mapped to the products above. The paywall reads `offerings.current`.
++4. Copy the **public** SDK keys into the mobile build environment:
++   - `EXPO_PUBLIC_REVENUECAT_IOS_KEY`
++   - `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY`
++5. Create a **secret** API key (V1, read access is enough) and a webhook:
++   - Console: `REVENUECAT_SECRET_KEY`, `REVENUECAT_ENTITLEMENT_ID=plus`
++   - Webhook URL: `https://registrar.atheniq.institute/api/internal/revenuecat/webhook`
++   - Webhook authorization header: `Bearer <REVENUECAT_WEBHOOK_TOKEN>`, and the
++     same value in the console environment.
++   - Send all events; the handler treats renewals, expirations, cancellations,
++     pauses and refunds explicitly.
++
++The console never trusts the phone. `POST /api/mobile/v1/premium/sync` asks
++RevenueCat for the learner's entitlements using the secret key; only an
++entitlement named `plus` becomes a membership row. Without
++`REVENUECAT_SECRET_KEY` the route answers `503 storeConfigured:false` and
++grants nothing.
++
++## App configuration
++
++`app.json` carries version `1.1.0` / iOS build `2` / Android `versionCode 2`.
++`eas.json` has development, preview and production profiles plus a submit block
++for App Store and Play.
++
++```bash
++npx eas-cli build --platform ios --profile production
++npx eas-cli build --platform android --profile production
++npx eas-cli submit --platform ios --profile production
++npx eas-cli submit --platform android --profile production
++```
++
++RevenueCat and StoreKit/Play Billing are native modules: Expo Go cannot take a
++payment. Use a development build (`--profile development`) to test sandbox
++purchases, restore, renewal, cancellation and refund before submitting.
++
++## App Review notes
++
++Paste into "Notes for Review":
++
++> AthenIQ Plus is an auto-renewable subscription sold in the app: monthly
++> (institute.atheniq.plus.monthly) and yearly (institute.atheniq.plus.yearly).
++> The app is fully usable for free; Plus adds offline downloads beyond one
++> course, an AI study coach and study analytics. Sign in with the sandbox
++> learner account in the review notes; the paywall is on Account → Upgrade to
++> AthenIQ Plus. Restore Purchases is on the same screen. Terms:
++> https://atheniq.institute/terms · Privacy: https://atheniq.institute/privacy
++
++Apple requires the paywall to show the subscription title, length and price,
++that payment is charged to the Apple account, that it renews unless cancelled
++24 hours before the end, and links to Terms (EULA) and Privacy. The screen has
++all four.
++
++## Submission checklist
++
++- [ ] Both products created and "Ready to Submit" with localised display names
++- [ ] Subscription group and both products attached to entitlement `plus`
++- [ ] Offering `default` has monthly and yearly packages
++- [ ] `EXPO_PUBLIC_REVENUECAT_*` keys in the production build env
++- [ ] Console has `REVENUECAT_SECRET_KEY` and `REVENUECAT_WEBHOOK_TOKEN`
++- [ ] Webhook reachable and returning 200 for a test event
++- [ ] Sandbox purchase, restore, renewal, cancellation, refund all observed
++- [ ] Free tier still reads every lesson of an enrolled free course
++- [ ] Screenshots include the paywall and the plan row in Account
++- [ ] Privacy nutrition label: purchases (not linked to tracking), identifiers
++- [ ] App Review notes pasted; demo learner account credentials supplied
+diff --git a/mobile/store/submission.json b/mobile/store/submission.json
+index 46095fc..87880fd 100644
+--- a/mobile/store/submission.json
++++ b/mobile/store/submission.json
+@@ -2,17 +2,39 @@
+   "appId": "6835960485",
+   "bundleId": "institute.atheniq.app",
+   "teamId": "BH7WW2BR39",
+-  "version": "1.0.0",
++  "version": "1.1.0",
+   "locale": "en-US",
+   "copyright": "2026 Innotel Labs",
+   "primaryCategory": "EDUCATION",
+   "name": "AthenIQ",
+   "subtitle": "Courses, progress, credentials",
+   "privacyPolicyUrl": "https://registrar.atheniq.institute/privacy",
++  "termsOfUseUrl": "https://atheniq.institute/terms",
+   "supportUrl": "https://atheniq.institute",
+   "marketingUrl": "https://atheniq.institute",
+-  "keywords": "courses,learning,college,credits,certificate,study,registrar,students",
+-  "promotionalText": "Enroll in a course, study offline, and carry your progress and certificates on your phone.",
+-  "description": "AthenIQ is the student app for AthenIQ Institute courses. Browse the catalog, read lessons, download them for offline study, and keep your progress in one place.\n\nWHAT YOU CAN DO\n\n· Browse the catalog and open any course that is free to start\n· Enroll in a course and read every lesson on the phone\n· Download a course for study without a connection\n· Follow your progress, credits and completed lessons\n· Collect certificates as courses finish, ready to show an employer\n· Pay for a priced course by transfer: the app issues a reference, the registrar confirms it, and the course opens\n\nFOR REGISTRARS\n\nStaff accounts sign in and see the payment queue and certificate requests that cannot wait for a desk, so a learner is not blocked while someone is away from a computer.\n\nHOW IT WORKS\n\nCourses are taught by AthenIQ Institute and recorded in the console the school already uses. The app is a client for that record: what you see is what your registrar sees.",
+-  "whatsNew": "First release: the catalog, lessons, offline downloads, progress, certificates, and the registrar's queue."
++  "keywords": "courses,learning,college,credits,certificate,study,registrar,students,offline,study coach",
++  "promotionalText": "Free to browse, enroll and read every lesson. AthenIQ Plus keeps the whole library offline and adds an AI study coach.",
++  "description": "AthenIQ is the student app for AthenIQ Institute courses. Browse the catalog, read lessons, download them for offline study, and keep your progress in one place. The app is free.\n\nFREE, FOREVER\n\n· Browse the catalog and open any course that is free to start\n· Enroll in a course and read every lesson on the phone\n· Keep one course downloaded for study without a connection\n· Follow your progress, credits and completed lessons\n· Collect certificates as courses finish, ready to show an employer\n· Pay for a priced course by transfer: the app issues a reference, the registrar confirms it, and the course opens\n\nATHENIQ PLUS\n\nAn optional subscription for the tools that make a phone a study tool:\n\n· Keep every enrolled course offline, not just one\n· Ask the AI study coach about the lesson in front of you; it answers from the course record, not from guesses\n· See your pace, what is left, and the modules that need another pass\n· Certificate requests from members are reviewed first\n\nPlus is $9.99 a month or $79.99 a year, charged to your store account. It renews unless cancelled at least 24 hours before the period ends; manage or cancel it in your store account. Restore Purchases is on the subscription screen.\n\nFOR REGISTRARS\n\nStaff accounts sign in and see the payment queue and certificate requests that cannot wait for a desk, so a learner is not blocked while someone is away from a computer.\n\nHOW IT WORKS\n\nCourses are taught by AthenIQ Institute and recorded in the console the school already uses. The app is a client for that record: what you see is what your registrar sees.",
++  "subscriptions": {
++    "groupName": "AthenIQ Plus",
++    "entitlement": "plus",
++    "products": [
++      {
++        "id": "institute.atheniq.plus.monthly",
++        "type": "auto-renewable",
++        "duration": "1 month",
++        "priceUsd": 9.99,
++        "displayName": "AthenIQ Plus Monthly"
++      },
++      {
++        "id": "institute.atheniq.plus.yearly",
++        "type": "auto-renewable",
++        "duration": "1 year",
++        "priceUsd": 79.99,
++        "displayName": "AthenIQ Plus Yearly"
++      }
++    ]
++  },
++  "whatsNew": "AthenIQ Plus: keep the whole library offline, ask the AI study coach about the lesson you are on, and see study analytics. The app remains free for browsing, lessons, progress and certificates.",
++  "reviewNotes": "AthenIQ Plus is an auto-renewable subscription sold in the app: monthly (institute.atheniq.plus.monthly) and yearly (institute.atheniq.plus.yearly), in one subscription group. The app is fully usable without it. The paywall is at Account → Upgrade to AthenIQ Plus and lists title, length, price, renewal terms, Terms of Use and Privacy Policy, with Restore Purchases. Use the sandbox learner account supplied above."
+ }
+diff --git a/package.json b/package.json
+index ad0201a..14dbc84 100644
+--- a/package.json
++++ b/package.json
+@@ -8,7 +8,8 @@
+     "build": "next build",
+     "start": "next start -p 3100",
+     "typecheck": "tsc --noEmit",
+-    "test:mobile-api": "node scripts/mobile-api-test.mjs"
++    "test:mobile-api": "node scripts/mobile-api-test.mjs",
++    "test:premium": "node --test scripts/premium-test.mjs"
+   },
+   "dependencies": {
+     "@types/nodemailer": "^8.0.2",
+diff --git a/scripts/premium-test.mjs b/scripts/premium-test.mjs
+new file mode 100644
+index 0000000..7a6f482
+--- /dev/null
++++ b/scripts/premium-test.mjs
+@@ -0,0 +1,164 @@
++/**
++ * Premium rules without a server.
++ *
++ * These are the parts that must not be wrong: who counts as a subscriber, what
++ * the free tier may keep offline, and how a store event becomes a membership.
++ * They run against the real modules, so a change in the mapping breaks a test
++ * rather than a learner's access.
++ */
++import assert from "node:assert/strict";
++import test from "node:test";
++import {
++  FREE_OFFLINE_COURSES,
++  downloadAllowed,
++  isPlus,
++  premiumSnapshot,
++  recordDownload,
++  upsertMembership,
++} from "../lib/premium.ts";
++import {
++  fetchSubscriber,
++  membershipFromEvent,
++  membershipFromSubscriber,
++  revenueCatSettings,
++} from "../lib/revenuecat.ts";
++
++const NOW = new Date("2026-11-26T12:00:00Z");
++const FUTURE = "2026-12-26T12:00:00.000Z";
++const PAST = "2026-10-26T12:00:00.000Z";
++const emptyDb = () => ({ memberships: [], downloads: [] });
++
++function membership(overrides = {}) {
++  return {
++    learnerId: "lrn_1",
++    plan: "plus",
++    status: "active",
++    store: "app_store",
++    productId: "institute.atheniq.plus.monthly",
++    originalTransactionId: "tx_1",
++    startedAt: NOW.toISOString(),
++    expiresAt: FUTURE,
++    updatedAt: NOW.toISOString(),
++    lastEventId: null,
++    ...overrides,
++  };
++}
++
++test("a free account may keep one course offline, and re-downloading it is free", () => {
++  const db = emptyDb();
++  const snapshot = premiumSnapshot(db, "lrn_1", NOW);
++  assert.equal(snapshot.plan, "free");
++  assert.equal(snapshot.offline.limit, FREE_OFFLINE_COURSES);
++  assert.equal(snapshot.features.coach, false);
++
++  assert.equal(downloadAllowed(db, "lrn_1", "course_a", NOW), true);
++  recordDownload(db, "lrn_1", "course_a", NOW);
++  assert.equal(downloadAllowed(db, "lrn_1", "course_a", NOW), true, "refreshing the same course is allowed");
++  assert.equal(downloadAllowed(db, "lrn_1", "course_b", NOW), false, "a second course needs Plus");
++
++  const after = premiumSnapshot(db, "lrn_1", NOW);
++  assert.equal(after.offline.used, 1);
++});
++
++test("an active, a lapsed and a granted membership each read correctly", () => {
++  const db = emptyDb();
++  upsertMembership(db, membership());
++  assert.equal(isPlus(db, "lrn_1", NOW), true);
++  assert.equal(premiumSnapshot(db, "lrn_1", NOW).features.offlineCourses, null, "Plus has no offline limit");
++  assert.equal(downloadAllowed(db, "lrn_1", "course_b", NOW), true);
++
++  upsertMembership(db, membership({ expiresAt: PAST }));
++  assert.equal(isPlus(db, "lrn_1", NOW), false);
++  assert.equal(premiumSnapshot(db, "lrn_1", NOW).status, "expired");
++
++  upsertMembership(db, membership({ status: "granted", store: "granted", expiresAt: null }));
++  assert.equal(isPlus(db, "lrn_1", NOW), true, "a grant with no expiry does not lapse");
++
++  upsertMembership(db, membership({ status: "refunded" }));
++  assert.equal(isPlus(db, "lrn_1", NOW), false, "a refund ends access");
++  assert.equal(db.memberships.length, 1, "one row per learner");
++});
++
++test("RevenueCat settings stay off until a secret key is set", () => {
++  assert.equal(revenueCatSettings({}), null);
++  const settings = revenueCatSettings({ REVENUECAT_SECRET_KEY: "sk_test" });
++  assert.equal(settings?.entitlementId, "plus");
++  assert.equal(settings?.baseUrl, "https://api.revenuecat.com");
++});
++
++test("a subscriber lookup becomes a membership only through the entitlement", () => {
++  const settings = revenueCatSettings({ REVENUECAT_SECRET_KEY: "sk_test" });
++  assert.ok(settings);
++
++  const entitled = membershipFromSubscriber(
++    "lrn_1",
++    {
++      subscriber: {
++        entitlements: {
++          plus: { expires_date: FUTURE, purchase_date: NOW.toISOString(), product_identifier: "institute.atheniq.plus.yearly" },
++        },
++      },
++    },
++    settings,
++    NOW,
++  );
++  assert.equal(entitled?.status, "active");
++  assert.equal(entitled?.productId, "institute.atheniq.plus.yearly");
++
++  const wrongEntitlement = membershipFromSubscriber(
++    "lrn_1",
++    { subscriber: { entitlements: { pro: { expires_date: FUTURE } } } },
++    settings,
++    NOW,
++  );
++  assert.equal(wrongEntitlement, null, "an entitlement the app does not sell grants nothing");
++
++  const unknown = membershipFromSubscriber("lrn_1", { subscriber: null }, settings, NOW);
++  assert.equal(unknown, null);
++});
++
++test("an unknown subscriber is 404, and a broken key is an error", async () => {
++  const settings = revenueCatSettings({ REVENUECAT_SECRET_KEY: "sk_test" });
++  assert.ok(settings);
++  const notFound = async () => new Response("{}", { status: 404 });
++  assert.deepEqual(await fetchSubscriber("lrn_1", settings, notFound), { subscriber: null });
++
++  const rejected = async () => new Response("{}", { status: 401 });
++  await assert.rejects(() => fetchSubscriber("lrn_1", settings, rejected), /401/);
++});
++
++test("store events renew, lapse and refund without ever shortening a paid term early", () => {
++  const renewal = membershipFromEvent(
++    {
++      id: "evt_2",
++      type: "RENEWAL",
++      app_user_id: "lrn_1",
++      product_id: "institute.atheniq.plus.monthly",
++      purchased_at_ms: NOW.getTime(),
++      expiration_at_ms: Date.parse(FUTURE),
++      store: "APP_STORE",
++    },
++    "lrn_1",
++    NOW,
++  );
++  assert.equal(renewal?.status, "active");
++  assert.equal(renewal?.store, "app_store");
++  assert.equal(renewal?.lastEventId, "evt_2");
++
++  const cancelled = membershipFromEvent(
++    { type: "CANCELLATION", app_user_id: "lrn_1", expiration_at_ms: Date.parse(FUTURE) },
++    "lrn_1",
++    NOW,
++  );
++  assert.equal(cancelled?.status, "active", "auto-renew off is not a refund");
++
++  const expired = membershipFromEvent(
++    { type: "EXPIRATION", app_user_id: "lrn_1", expiration_at_ms: Date.parse(PAST) },
++    "lrn_1",
++    NOW,
++  );
++  assert.equal(expired?.status, "expired");
++
++  const refunded = membershipFromEvent({ type: "REFUND", app_user_id: "lrn_1" }, "lrn_1", NOW);
++  assert.equal(refunded?.status, "refunded");
++});

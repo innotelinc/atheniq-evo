@@ -174,9 +174,26 @@ vendor. `upstream.lock.json` pins what the patches were generated against, and
 | **OpenMAIC** | `app/api/atheniq/completion` reports a finished classroom with an HMAC-signed callback; `components/atheniq/atheniq-completion-reporter.tsx` is the one control it renders. | Completion has to leave the classroom and reach the record of record. Identity and course come from the signed token, so a browser cannot claim another learner's completion. |
 | **atheniq-console** | `lib/award.ts` extracts the award logic that was the body of `POST /api/credentials`; both the registrar UI and the new service route use it. | One implementation of eligibility, evidence hashing and the Signara flow — the thing least affordable to have two of. |
 | **atheniq-console** | `app/api/internal/atheniq` (service-token), `app/api/classrooms/launch` (portal → bridge → cookie → redirect), and an *AI classroom* button in the portal. | The console is the only thing a learner signs into; it should be the only thing they press. |
+| **atheniq-console** | `lib/premium.ts` + `lib/revenuecat.ts` hold the subscription rules; `/api/mobile/v1/premium`, `.../premium/sync`, `/api/mobile/v1/coach`, `/api/mobile/v1/analytics` and `/api/internal/revenuecat/webhook` expose them; the mobile app gains a paywall, a study coach, insights and one-course offline quota. | The app is free; AthenIQ Plus pays for the tools that need a server. Entitlement is a row the console writes after asking RevenueCat — never a plan the phone claims. |
 | **atheniq-console** | `middleware.ts` answers `308` for `/courses` and `/generate` to the institution console, translated to its paths (`/generate` → `/courses/generate`); `components/Nav.tsx` links there instead of listing them; `app/page.tsx`'s course CTAs — new course, generate, a course's editor — point there directly and take no hop; `next.config.mjs` and the `Dockerfile` carry `INSTITUTION_CONSOLE_URL`, which Next inlines at build time. | Course authoring has one owner. The console keeps awards and degree plans, not a second catalog. |
 | **Open edX** | No source patch. `deploy/openedx/` adds the settings the estate needs (`WRITABLE_GRADEBOOK`, completion tracking, trusted origins) and a script that creates the bridge's service user. | The LMS already exposes the two endpoints the bridge writes to. Forking Django views would be a maintenance cost with no benefit. |
 | **Signara** | No source patch. The console already speaks its document + signature + certificate API; `deploy/signara/` adds the estate's API settings. | Signing is Signara's job, and the console is the issuer of record. |
+
+## AthenIQ Plus
+
+The phone app is free: browse, enroll, read every lesson, keep progress, collect
+certificates. **AthenIQ Plus** is an auto-renewable subscription ($9.99/month or
+$79.99/year) that adds the whole library offline, an AI study coach and study
+analytics, with priority registrar review.
+
+The console decides entitlement from a membership row it writes after asking
+RevenueCat with a server-side key; the coach, analytics and offline quota check
+that row on every call. Set `REVENUECAT_SECRET_KEY` and
+`REVENUECAT_WEBHOOK_TOKEN` to open it — without them the paywall is closed and
+nothing is granted. The public SDK keys are build-time variables for the app.
+See `docs/monetization.md` for the flow, and
+`mobile/store/premium.md` in the console patch for products, review notes and the
+submission checklist.
 
 ## Verification
 

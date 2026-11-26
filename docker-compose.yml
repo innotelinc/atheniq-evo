@@ -168,6 +168,12 @@ services:
       ATHENIQ_CLASSROOM_COOKIE_DOMAIN: ${CLASSROOM_COOKIE_DOMAIN:-}
       LMS_BASE_URL: ${LMS_PUBLIC_URL:-http://localhost:18000}
       CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:3100}
+      # AthenIQ Plus. The secret key lets the console read a learner's store
+      # entitlement; the webhook token authenticates RevenueCat's events. Empty
+      # means the paywall is closed and nothing is granted.
+      REVENUECAT_SECRET_KEY: ${REVENUECAT_SECRET_KEY:-}
+      REVENUECAT_WEBHOOK_TOKEN: ${REVENUECAT_WEBHOOK_TOKEN:-}
+      REVENUECAT_ENTITLEMENT_ID: ${REVENUECAT_ENTITLEMENT_ID:-plus}
       # Course authoring is the institution's. This app's /courses and /generate
       # answer 308 to this URL rather than offering a second catalog.
       INSTITUTION_CONSOLE_URL: ${INSTITUTION_CONSOLE_URL:-https://registrar.atheniq.institute}
