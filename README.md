@@ -50,7 +50,12 @@ course is one course and a completion becomes a credential exactly once.
 A completion is idempotent by `classroomId:learnerId`. Pressing *Finish module*
 twice, or a retry after a dropped response, returns the first result rather than
 a second certificate. `POST /v1/completions?retry=1` re-runs only the steps that
-did not finish — the fix for "the LMS token was missing".
+did not finish — the fix for "the LMS token was missing". A partial completion
+is also retried on its own: an in-process sweep retries due records with
+exponential backoff (one minute doubling to one hour by default),
+`GET /v1/completions/needs-retry` lists what is waiting, and a record still
+partial after 30 minutes raises one alert and fails the `completion-retries`
+health check.
 
 **One staff console.** `registrar.atheniq.institute` is the institution console,
 and it is the only place a course is added, edited, generated or removed. The
@@ -81,8 +86,8 @@ Then open `http://atheniq.localhost:8080` for the public site and
 `institution` service, routed by hostname.
 
 `npm run check` is the honest gate: a Compose guard, `tsc` over the bridge and
-the institution, 29 bridge tests that start the real HTTP server against fake
-OpenMAIC, LMS, console and OmniRoute, and 45 institution tests covering the
+the institution, 31 bridge tests that start the real HTTP server against fake
+OpenMAIC, LMS, console and OmniRoute, and 64 institution tests covering the
 application → admission → account → registration lifecycle, the course catalog
 (create, edit, publish, remove, LMS sync, AI draft fallback), the Stalwart JMAP
 calls and the startup preflight against a fake server.
@@ -114,6 +119,11 @@ Fill in `.env` before starting anything with real traffic:
 | `OPENMAIC_PUBLIC_URL` | The browser-reachable OpenMAIC origin for the embedded classroom preview. Empty means the console explains that embedding is not configured. |
 | `INSTITUTION_CONSOLE_URL` | Where the Next.js console sends course authoring: the institution console, `https://registrar.atheniq.institute`. Also the sidebar's *Course catalog* link. Inlined into the console's middleware at build time, so Compose passes it as a build argument. |
 
+On a fresh install the registrar and mail values may stay empty: the institution
+then serves only `/setup` on its public origin, prints a one-time token, and
+writes `setup.json` with mode 0600 when the form is completed. Restart it to
+apply the file. See `docs/institution.md`.
+
 The bridge **refuses to start** without strong `BRIDGE_JWT_SECRET`,
 `BRIDGE_SERVICE_TOKEN` and `BRIDGE_HOOK_SECRET`, and refuses a corrupt ledger.
 Starting with an empty signing key would mint classroom tokens anyone can forge.
@@ -135,6 +145,7 @@ apps/institution/       the university — public site, portal, console
   src/sync.ts           reads the LMS public catalog
   src/classroom.ts      starts and signs into OpenMAIC's classroom
   src/registry.ts       apply → admit → issue account → register
+  src/bootstrap.ts      first-run setup file, token gate and setup server
   src/store.ts          the institution registry (atomic JSON, one writer)
   src/server.ts         one process, two hostnames, no framework
   src/views/            public · portal · registrar · courses
@@ -171,12 +182,17 @@ vendor. `upstream.lock.json` pins what the patches were generated against, and
 
 Run: `npm run check`.
 
-- **29 bridge tests pass**, over real HTTP, against fake upstreams: launch,
+- **31 bridge tests pass**, over real HTTP, against fake upstreams: launch,
   generation, full completion fan-out, replay, signed-callback refusal,
   stale-signature refusal, course/learner mismatch, unknown classroom, per-step
-  retry, credential idempotency, gateway model list, and the token rules
+  retry, automatic retry with backoff and stale alerting, credential
+  idempotency, gateway model list, and the token rules
   (expiry, audience, issuer, tampering, algorithm, weak signature).
-- **45 institution tests pass**: curriculum integrity, application validation,
+- **64 institution tests pass**: curriculum integrity, application validation,
+  application windows (before, after, and the inclusive final day) and the
+  registration deadline, session revocation on password change and reset,
+  sign-in limiting behind a trusted proxy and when exposed directly, demo
+  provenance and the idempotent purge (dry run, backup, legacy ids),
   admission issuing one account and a unique `@atheniq.institute` address,
   mailbox activation, Stalwart account creation and password updates, the
   startup preflight (unreachable URL, rejected key, missing domain), the
@@ -184,8 +200,10 @@ Run: `npm run check`.
   seat accounting, full-studio refusal, waitlist refusal, salted password hashes,
   session role/tamper rules, and the catalog: unique codes, the runtime key,
   draft-versus-published registration, an edit reaching credits, a removal guard,
-  sync drift in both directions, LMS read failures, and AI generation against a
-  fake gateway and the rules fallback.
+  sync drift in both directions, LMS read failures, AI generation against a
+  fake gateway and the rules fallback, and first-run setup: the one-time token,
+  the atomic 0600 file, scrypt hashing, the mail test, environment precedence,
+  and the 404 once setup is complete.
 - **`tsc --noEmit` is clean** for the bridge and the institution.
 - **All three patches apply cleanly** to the pinned upstream commits
   (`git apply --check`).
