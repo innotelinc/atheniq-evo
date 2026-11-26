@@ -8,7 +8,14 @@
  */
 
 import type { CatalogCourse } from "../catalog.ts";
-import { TERMS, programBySlug, termById } from "../content.ts";
+import {
+  TERMS,
+  formatDate,
+  programBySlug,
+  registrationLabel,
+  registrationState,
+  termById,
+} from "../content.ts";
 import type { Enrollment, Student } from "../store.ts";
 import type { TranscriptResult } from "../bridge.ts";
 import {
@@ -85,6 +92,7 @@ export function dashboard(
   const completed = enrollments.filter((item) => item.status === "completed");
   const program = programBySlug(student.programSlug);
   const term = termById(student.termId);
+  const openTerms = TERMS.filter((item) => registrationState(item) === "open").map((item) => item.name);
   const credits = completed.reduce((total, item) => total + (courseOf(courses, item.courseCode)?.credits ?? 0), 0);
 
   const body = `
@@ -124,7 +132,7 @@ export function dashboard(
           <h2>Your registrations.</h2>
         </div>
         <div class="section-head__aside">
-          <p>Registration is open for ${esc(TERMS.filter((item) => item.registration === "open").map((item) => item.name).join(" and "))}. Seats are held when you register.</p>
+          <p>${openTerms.length > 0 ? `Registration is open for ${esc(openTerms.join(" and "))}. Seats are held when you register.` : "Registration is closed for the current terms."}</p>
           <a class="textlink textlink--arrow" href="/portal/register">Register for classes <span aria-hidden="true">→</span></a>
         </div>
       </div>
@@ -152,7 +160,9 @@ export function dashboard(
             </div>`
           : emptyState(
               "No registrations yet",
-              "Registration for Fall 2027 is open. Choose from the catalog; a seat is held as soon as you register.",
+              openTerms.length > 0
+                ? `Registration for ${openTerms.join(" and ")} is open. Choose from the catalog; a seat is held as soon as you register.`
+                : "Registration is closed for the current terms. The registrar will announce the next window.",
               { href: "/portal/register", label: "Browse the catalog" },
             )
       }
@@ -238,10 +248,11 @@ export function register(
       (course) => course.termId === term.id && course.status === "published",
     );
     if (inTerm.length === 0) return "";
+    const registration = registrationState(term);
     return `<div class="term-block">
       <div class="term-block__head">
         <h2>${esc(term.name)}</h2>
-        <span>${esc(term.starts)} — ${esc(term.ends)} · registration ${esc(term.registration)}</span>
+        <span>${esc(formatDate(term.starts))} — ${esc(formatDate(term.ends))} · registration ${esc(registrationLabel(term))}</span>
       </div>
       ${inTerm
         .map((course) => {
@@ -259,12 +270,12 @@ export function register(
               ${
                 taken
                   ? statusBadge("registered")
-                  : term.registration === "open" && seats > 0
+                  : registration === "open" && seats > 0
                     ? `<form method="post" action="/portal/register">
                         <input type="hidden" name="courseCode" value="${esc(course.code)}">
                         <button class="button button--small" type="submit">Register</button>
                       </form>`
-                    : `<span class="badge badge--neutral">${term.registration === "open" ? "Full" : "Waitlist"}</span>`
+                    : `<span class="badge badge--neutral">${registration === "open" ? "Full" : registration === "waitlist" ? "Waitlist" : "Closed"}</span>`
               }
             </div>
           </div>`;
@@ -287,7 +298,7 @@ export function register(
       ${state.notice ? notice("success", state.notice) : ""}
       <div class="panel mb-8">
         <p class="eyebrow">How registration works</p>
-        <p class="flush">A seat is reserved when you register. If a studio is full, the button is disabled and the registrar keeps the waitlist. You can see everything you have registered for on your <a href="/portal/record">record</a>.</p>
+        <p class="flush">A seat is reserved when you register. Registration closes on the date shown for each term. If a studio is full, the button is disabled and the registrar keeps the waitlist. You can see everything you have registered for on your <a href="/portal/record">record</a>.</p>
       </div>
       ${terms}
     </div>

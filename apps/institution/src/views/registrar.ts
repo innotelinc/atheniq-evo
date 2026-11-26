@@ -8,7 +8,7 @@
  */
 
 import type { CatalogCourse } from "../catalog.ts";
-import { programBySlug, termById } from "../content.ts";
+import { applicationWindowLabel, programBySlug, termById } from "../content.ts";
 import type { RegistrySummary } from "../registry.ts";
 import type { Application, Enrollment, Student } from "../store.ts";
 import {
@@ -290,7 +290,7 @@ export function applicationDetail(
           <div class="detail"><dt>Program</dt><dd>${esc(program ? `${program.credential} ${program.name}` : application.programSlug)}</dd></div>
           <div class="detail"><dt>Intake</dt><dd>${esc(term?.name ?? application.termId)}</dd></div>
           <div class="detail"><dt>Fee</dt><dd>${esc(program?.tuitionNote ?? "—")}</dd></div>
-          <div class="detail"><dt>Deadline</dt><dd>${esc(program?.applicationDeadline ?? "—")}</dd></div>
+          <div class="detail"><dt>Deadline</dt><dd>${esc(term ? applicationWindowLabel(term) : "—")}</dd></div>
           <div class="detail"><dt>Decided</dt><dd>${esc(dateLabel(application.decidedAt))}</dd></div>
           <div class="detail"><dt>Note</dt><dd>${esc(application.decisionNote ?? "—")}</dd></div>
         </div>

@@ -187,7 +187,7 @@ function sessionFor(
   config: InstitutionConfig,
   role: "student" | "registrar",
   now: Date,
-): { sub: string; role: "student" | "registrar" } | null {
+): { sub: string; role: "student" | "registrar"; ver: number } | null {
   const name = role === "student" ? SESSION_COOKIE : STAFF_COOKIE;
   const token = cookies[name];
   if (!token) return null;
@@ -302,7 +302,12 @@ route("public", "POST", "/portal/signin", (context) => {
   const student = result.value;
   if (!student) return html(401, portalSignIn(contextFor(context.config), { email, error: "Account unavailable." }));
   const token = signSession(
-    { sub: student.id, role: "student", exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS },
+    {
+      sub: student.id,
+      role: "student",
+      exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
+      ver: student.sessionVersion,
+    },
     context.config.sessionSecret,
   );
   const cookie = sessionCookie(SESSION_COOKIE, token, {
@@ -390,7 +395,23 @@ route("public", "POST", "/portal/password", async (context) => {
     return html(422, password(ui, student, { forced: student.mustChangePassword, error: result.error }));
   }
   await provisionMailbox(context.registry, context.mailer, student, next);
-  return redirect("/portal/dashboard");
+  // The password change bumped the session version, so the cookie that made
+  // this request is already stale. Issue the current one before redirecting.
+  const fresh = context.registry.student(student.id) ?? student;
+  const token = signSession(
+    {
+      sub: fresh.id,
+      role: "student",
+      exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
+      ver: fresh.sessionVersion,
+    },
+    context.config.sessionSecret,
+  );
+  const cookie = sessionCookie(SESSION_COOKIE, token, {
+    secure: context.config.cookieSecure,
+    maxAgeSeconds: SESSION_TTL_SECONDS,
+  });
+  return redirect("/portal/dashboard", [cookie]);
 });
 
 route("registrar", "GET", "/signin", ({ config }) => html(200, registrarSignIn(contextFor(config))));
@@ -425,7 +446,12 @@ route("registrar", "POST", "/signin", (context) => {
   }
   limiter.clear(key);
   const token = signSession(
-    { sub: config.registrarEmail, role: "registrar", exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS },
+    {
+      sub: config.registrarEmail,
+      role: "registrar",
+      exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
+      ver: 0,
+    },
     config.sessionSecret,
   );
   return redirect("/", [
@@ -1132,7 +1158,12 @@ export function createInstitutionServer(deps: ServerDeps) {
     const cookies = parseCookies(request.headers.cookie);
     const studentSession = sessionFor(cookies, config, "student", now);
     const staffSession = sessionFor(cookies, config, "registrar", now);
-    const student = studentSession ? registry.student(studentSession.sub) ?? null : null;
+    const studentRecord = studentSession ? registry.student(studentSession.sub) ?? null : null;
+    // A cookie minted before the last password change or reset is no longer current.
+    const student =
+      studentRecord && studentSession && studentSession.ver === studentRecord.sessionVersion
+        ? studentRecord
+        : null;
     const staff = staffSession && safeEqual(staffSession.sub, config.registrarEmail) ? staffSession.sub : null;
 
     const viewer = viewerFor(student, staff);

@@ -15,7 +15,15 @@
 import { randomBytes } from "node:crypto";
 import { hashPassword, temporaryPassword, verifyPassword } from "./auth.ts";
 import type { InstitutionConfig } from "./config.ts";
-import { PROGRAMS, TERMS, programBySlug, termById } from "./content.ts";
+import {
+  PROGRAMS,
+  TERMS,
+  applicationState,
+  formatDate,
+  programBySlug,
+  registrationState,
+  termById,
+} from "./content.ts";
 import { Catalog } from "./catalog.ts";
 import type { Store, Application, Enrollment, Student } from "./store.ts";
 
@@ -111,7 +119,18 @@ export class Registry {
     const program = programBySlug(input.programSlug);
     if (!program) fields.programSlug = "Choose a program.";
     const term = termById(input.termId);
-    if (!term || !term.intake) fields.termId = "Choose an intake that is accepting applications.";
+    if (!term) {
+      fields.termId = "Choose an intake that is accepting applications.";
+    } else {
+      const state = applicationState(term, now);
+      if (state === "not-accepting") {
+        fields.termId = `${term.name} is not an intake. Choose an intake that is accepting applications.`;
+      } else if (state === "before") {
+        fields.termId = `Applications for ${term.name} open on ${formatDate(term.applicationsOpen)}.`;
+      } else if (state === "after") {
+        fields.termId = `Applications for ${term.name} closed on ${formatDate(term.applicationsClose)}.`;
+      }
+    }
 
     if (Object.keys(fields).length > 0) {
       return { ok: false, error: "Please correct the highlighted fields.", fields };
@@ -221,6 +240,7 @@ export class Registry {
       schoolEmail: address,
       passwordHash: hashPassword(tempPassword),
       mustChangePassword: true,
+      sessionVersion: 0,
       programSlug: application.programSlug,
       termId: application.termId,
       status: "active" as const,
@@ -313,11 +333,19 @@ export class Registry {
     }
 
     const term = termById(course.termId);
-    if (!term || term.registration === "closed") {
-      return { ok: false, error: "Registration for this course has closed." };
+    if (!term) return { ok: false, error: "That course has no term on record." };
+    const state = registrationState(term, now);
+    if (state === "closed") {
+      return { ok: false, error: `Registration for ${term.name} is closed.` };
     }
-    if (term.registration === "waitlist") {
-      return { ok: false, error: "This term is on a waitlist. Contact the registrar to be added." };
+    if (state === "past-deadline") {
+      return {
+        ok: false,
+        error: `Registration for ${term.name} closed on ${formatDate(term.registrationCloses)}.`,
+      };
+    }
+    if (state === "waitlist") {
+      return { ok: false, error: `${term.name} is on a waitlist. Contact the registrar to be added.` };
     }
 
     const existing = this.store
@@ -366,6 +394,7 @@ export class Registry {
       if (!target) return;
       target.passwordHash = hash;
       target.mustChangePassword = false;
+      target.sessionVersion = (target.sessionVersion ?? 0) + 1;
       delete target.temporaryPasswordIssuedAt;
     });
     return { ok: true, value: true };
@@ -381,6 +410,7 @@ export class Registry {
       if (!target) return;
       target.passwordHash = hash;
       target.mustChangePassword = true;
+      target.sessionVersion = (target.sessionVersion ?? 0) + 1;
       target.temporaryPasswordIssuedAt = now.toISOString();
     });
     return { ok: true, value: { tempPassword } };

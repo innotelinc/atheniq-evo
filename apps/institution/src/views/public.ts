@@ -14,9 +14,15 @@ import {
   PROGRAMS,
   STATS,
   TERMS,
-  TIMELINE,
+  applicationCycle,
+  applicationWindowLabel,
+  formatDate,
   intakeTerms,
+  openApplicationTerms,
+  registrationLabel,
+  timelineFor,
   type Program,
+  type Term,
 } from "../content.ts";
 import type { CatalogCourse } from "../catalog.ts";
 import type { Application } from "../store.ts";
@@ -70,8 +76,8 @@ function facultyCards(limit?: number): string {
     .join("")}</div>`;
 }
 
-function timelineRows(): string {
-  return `<div class="timeline">${TIMELINE.map(
+function timelineRows(term: Term): string {
+  return `<div class="timeline">${timelineFor(term).map(
     (item) => `<div class="timeline__row">
       <span class="timeline__date">${esc(item.date)}</span>
       <h3>${esc(item.title)}</h3>
@@ -100,6 +106,7 @@ function ctaBand(input: {
 }
 
 export function home(ctx: UiContext): string {
+  const cycle = applicationCycle();
   const body = `
   <section class="hero">
     <div class="shell hero__inner">
@@ -111,7 +118,7 @@ export function home(ctx: UiContext): string {
           <a class="button" href="/admissions/apply">Begin an application</a>
           <a class="button button--ghost" href="/academics">Explore programs</a>
         </div>
-        <p class="hero__note">Fall 2027 intake · priority deadline January 15, 2027 · no application fee</p>
+        <p class="hero__note">${esc(cycle.name)} intake · priority deadline ${esc(formatDate(cycle.applicationsPriority))} · no application fee</p>
       </div>
       <aside class="hero__panel">
         <p class="eyebrow">At a glance</p>
@@ -200,16 +207,16 @@ export function home(ctx: UiContext): string {
     <div class="shell">
       ${sectionHead({
         eyebrow: "Admissions",
-        title: "The Fall 2027 calendar.",
+        title: `The ${cycle.name} calendar.`,
         lede: "Applications are read in the order they arrive. Priority applicants are interviewed first and considered for every scholarship round.",
         action: { href: "/admissions", label: "Admissions and fees" },
       })}
-      ${timelineRows()}
+      ${timelineRows(cycle)}
     </div>
   </section>
 
   ${ctaBand({
-    eyebrow: "Fall 2027",
+    eyebrow: cycle.name,
     title: "Start with a conversation about what you want to build.",
     body: "Applications take about twenty minutes. If you are unsure which program fits, apply to the closest one and tell us — we will read it properly.",
     href: "/admissions/apply",
@@ -275,7 +282,7 @@ export function academics(ctx: UiContext, catalog: CatalogCourse[]): string {
         return `<div class="term-block">
           <div class="term-block__head">
             <h2>${esc(term.name)}</h2>
-            <span>${esc(term.starts)} — ${esc(term.ends)} · registration ${esc(term.registration)}</span>
+            <span>${esc(formatDate(term.starts))} — ${esc(formatDate(term.ends))} · registration ${esc(registrationLabel(term))}</span>
           </div>
           <div class="table-wrap">
             <table class="table">
@@ -311,6 +318,7 @@ export function academics(ctx: UiContext, catalog: CatalogCourse[]): string {
 }
 
 export function programPage(ctx: UiContext, program: Program, catalog: CatalogCourse[]): string {
+  const cycle = applicationCycle();
   const curriculum = program.curriculum
     .map(
       (block) => `<div class="term-block">
@@ -368,9 +376,9 @@ export function programPage(ctx: UiContext, program: Program, catalog: CatalogCo
         <h2>${esc(program.credential)} ${esc(program.name)}</h2>
         <p>${esc(program.summary)}</p>
         <dl class="panel__facts">
-          <div><dt>Applications</dt><dd>${esc(program.applicationDeadline)}</dd></div>
+          <div><dt>Applications</dt><dd>${esc(applicationWindowLabel(cycle))}</dd></div>
           <div><dt>Fees</dt><dd>${money(program.tuition)}${program.tuitionUnit === "year" ? " / year" : ""}</dd></div>
-          <div><dt>Start</dt><dd>Fall 2027</dd></div>
+          <div><dt>Start</dt><dd>${esc(formatDate(cycle.starts))}</dd></div>
         </dl>
         <p class="form-note">${esc(program.tuitionNote)}</p>
         <a class="button" href="/admissions/apply?program=${esc(program.slug)}">Apply for this program</a>
@@ -390,7 +398,7 @@ export function programPage(ctx: UiContext, program: Program, catalog: CatalogCo
   </section>
 
   ${ctaBand({
-    eyebrow: `${program.level} · Fall 2027`,
+    eyebrow: `${program.level} · ${cycle.name}`,
     title: "Questions about fit? Ask before you apply.",
     body: "A member of faculty answers admissions email, not an admissions funnel.",
     href: `mailto:admissions@${ctx.mailDomain}`,
@@ -409,15 +417,16 @@ export function programPage(ctx: UiContext, program: Program, catalog: CatalogCo
 
 export function admissions(ctx: UiContext): string {
   const upcoming = intakeTerms();
+  const cycle = applicationCycle();
   const body = `
   ${pageHead({
     eyebrow: "Admissions",
     title: "Admission is a conversation, not a filter.",
     lede: "We read every application. There is no fee, no entrance examination and no requirement that your first degree has a particular name. We are looking for evidence that you can do the work and a clear sense of what you want to do with it.",
     facts: [
-      { label: "Applications open", value: "September 2026" },
-      { label: "Priority deadline", value: "January 15, 2027" },
-      { label: "Final deadline", value: "April 30, 2027" },
+      { label: "Applications open", value: formatDate(cycle.applicationsOpen) },
+      { label: "Priority deadline", value: formatDate(cycle.applicationsPriority) },
+      { label: "Final deadline", value: formatDate(cycle.applicationsClose) },
       { label: "Decision", value: "Within three weeks of interview" },
     ],
   })}
@@ -489,14 +498,14 @@ export function admissions(ctx: UiContext): string {
       </div>
       <aside class="panel panel--sticky">
         <p class="eyebrow">Intakes</p>
-        <h2>Fall 2027</h2>
+        <h2>${esc(cycle.name)}</h2>
         <dl class="panel__facts">
           ${upcoming
             .map(
-              (term) => `<div><dt>${esc(term.name)}</dt><dd>${esc(term.starts)}</dd></div>`,
+              (term) => `<div><dt>${esc(term.name)}</dt><dd>${esc(formatDate(term.starts))}</dd></div>`,
             )
             .join("")}
-          <div><dt>Applications close</dt><dd>April 30, 2027</dd></div>
+          <div><dt>Applications close (${esc(cycle.name)})</dt><dd>${esc(formatDate(cycle.applicationsClose))}</dd></div>
           <div><dt>Decision</dt><dd>Within 3 weeks</dd></div>
         </dl>
         <a class="button" href="/admissions/apply">Begin an application</a>
@@ -510,9 +519,9 @@ export function admissions(ctx: UiContext): string {
       ${sectionHead({
         eyebrow: "Calendar",
         title: "What happens, and when.",
-        lede: "The Fall 2027 cycle, from the day applications open to the first day of teaching.",
+        lede: `The ${cycle.name} cycle, from the day applications open to the first day of teaching.`,
       })}
-      ${timelineRows()}
+      ${timelineRows(cycle)}
     </div>
   </section>
 
@@ -552,6 +561,8 @@ export function applyForm(
 ): string {
   const values = state.values ?? {};
   const fields = state.fields ?? {};
+  const openTerms = openApplicationTerms();
+  const cycle = applicationCycle();
   const body = `
   ${pageHead({
     eyebrow: "Admissions",
@@ -588,7 +599,12 @@ export function applyForm(
             value: values.termId,
             required: true,
             error: fields.termId,
-            options: intakeTerms().map((term) => ({ value: term.id, label: `${term.name} — starts ${term.starts}` })),
+            options: openTerms.length > 0
+              ? openTerms.map((term) => ({
+                  value: term.id,
+                  label: `${term.name} — apply by ${formatDate(term.applicationsClose)}`,
+                }))
+              : [{ value: "", label: "No intake is accepting applications right now" }],
           })}
         </div>
         ${textareaField({
@@ -625,7 +641,7 @@ export function applyForm(
 
   return layout({
     title: "Apply",
-    description: "Apply to AthenIQ Institute for the Fall 2027 intake.",
+    description: `Apply to AthenIQ Institute for the ${cycle.name} intake.`,
     surface: "public",
     active: "admissions",
     ctx,

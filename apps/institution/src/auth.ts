@@ -79,6 +79,8 @@ export interface SessionPayload {
   role: SessionRole;
   /** Unix seconds. */
   exp: number;
+  /** The subject's session version; a password change or reset invalidates it. */
+  ver: number;
 }
 
 export const SESSION_COOKIE = "atheniq_student";
@@ -117,7 +119,8 @@ export function verifySession(
   if (claims.role !== role) return null;
   if (typeof claims.sub !== "string" || !claims.sub) return null;
   if (typeof claims.exp !== "number" || claims.exp < Math.floor(now.getTime() / 1000)) return null;
-  return { sub: claims.sub, role, exp: claims.exp };
+  if (typeof claims.ver !== "number" || !Number.isInteger(claims.ver) || claims.ver < 0) return null;
+  return { sub: claims.sub, role, exp: claims.exp, ver: claims.ver };
 }
 
 export function sessionCookie(name: string, value: string, options: {

@@ -6,11 +6,14 @@
  */
 
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { hashPassword, signSession, verifyPassword, verifySession } from "../src/auth.ts";
 import { loadConfig } from "../src/config.ts";
-import { COURSES, PROGRAMS, courseByCode } from "../src/content.ts";
+import { COURSES, PROGRAMS, applicationCycle, courseByCode, openApplicationTerms } from "../src/content.ts";
 import { Registry } from "../src/registry.ts";
+import { createInstitutionServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 
 function config() {
@@ -239,6 +242,58 @@ test("a waitlisted term does not accept registration", () => {
   assert.match(result.error, /waitlist/i);
 });
 
+test("an application before the intake opens is refused with the opening date", () => {
+  const { registry } = build();
+  const result = registry.createApplication(
+    application({ termId: "2028B" }),
+    new Date("2026-11-20T12:00:00Z"),
+  );
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.fields?.termId ?? "", /open on May 1, 2027/);
+});
+
+test("an application after the intake closes is refused with the closing date", () => {
+  const { registry } = build();
+  const result = registry.createApplication(application(), new Date("2027-05-01T00:00:00Z"));
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.fields?.termId ?? "", /closed on April 30, 2027/);
+});
+
+test("the final day of an application window is still open", () => {
+  const { registry } = build();
+  const result = registry.createApplication(application(), new Date("2027-04-30T23:59:00Z"));
+  assert.equal(result.ok, true);
+});
+
+test("registration after the term deadline is refused", () => {
+  const { registry } = build();
+  const created = registry.createApplication(application(), new Date("2026-11-20T12:00:00Z"));
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+  const admitted = registry.decide(created.value.id, "admit", "", new Date("2026-11-21T12:00:00Z"));
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok || !admitted.value.student) return;
+
+  const result = registry.register(admitted.value.student.id, "AI101", new Date("2027-09-01T00:00:00Z"));
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.error, /closed on August 28, 2027/);
+
+  const lastDay = registry.register(admitted.value.student.id, "AI101", new Date("2027-08-28T23:59:00Z"));
+  assert.equal(lastDay.ok, true, "the registration deadline is inclusive of its final day");
+});
+
+test("the application cycle is derived from the term dates", () => {
+  assert.equal(applicationCycle(new Date("2026-11-20T12:00:00Z")).name, "Fall 2027");
+  assert.equal(applicationCycle(new Date("2027-06-01T12:00:00Z")).name, "Spring 2028");
+  assert.deepEqual(
+    openApplicationTerms(new Date("2026-11-20T12:00:00Z")).map((term) => term.id),
+    ["2027A"],
+  );
+});
+
 test("password hashes are salted and verifiable", () => {
   const first = hashPassword("the-same-password");
   const second = hashPassword("the-same-password");
@@ -251,14 +306,87 @@ test("password hashes are salted and verifiable", () => {
 test("a session is bound to its role and refuses tampering", () => {
   const secret = "s".repeat(48);
   const now = new Date("2026-11-20T12:00:00Z");
-  const token = signSession({ sub: "lrn_demo", role: "student", exp: Math.floor(now.getTime() / 1000) + 60 }, secret);
+  const token = signSession(
+    { sub: "lrn_demo", role: "student", exp: Math.floor(now.getTime() / 1000) + 60, ver: 0 },
+    secret,
+  );
 
   assert.equal(verifySession(token, secret, "student", now)?.sub, "lrn_demo");
   assert.equal(verifySession(token, secret, "registrar", now), null, "a student token is not a staff token");
   assert.equal(verifySession(`${token.slice(0, -1)}x`, secret, "student", now), null, "a changed signature is refused");
 
-  const expired = signSession({ sub: "lrn_demo", role: "student", exp: Math.floor(now.getTime() / 1000) - 1 }, secret);
+  const expired = signSession(
+    { sub: "lrn_demo", role: "student", exp: Math.floor(now.getTime() / 1000) - 1, ver: 0 },
+    secret,
+  );
   assert.equal(verifySession(expired, secret, "student", now), null);
+});
+
+test("a password change and a registrar reset revoke existing sessions", async (t) => {
+  const store = Store.inMemory();
+  const cfg = config();
+  const registry = new Registry(store, cfg);
+  const created = registry.createApplication(application(), new Date("2026-11-20T12:00:00Z"));
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+  const admitted = registry.decide(created.value.id, "admit", "", new Date("2026-11-20T12:00:00Z"));
+  assert.equal(admitted.ok, true);
+  if (!admitted.ok || !admitted.value.student || !admitted.value.tempPassword) return;
+
+  const student = admitted.value.student;
+  const tempPassword = admitted.value.tempPassword;
+  const server = createInstitutionServer({ config: cfg, registry, mailer: null });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const signIn = async (password: string): Promise<string> => {
+    const response = await fetch(`${base}/portal/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ email: student.schoolEmail, password }).toString(),
+      redirect: "manual",
+    });
+    assert.equal(response.status, 303, "sign-in redirects on success");
+    const cookie = (response.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    assert.match(cookie, /^atheniq_student=/);
+    return cookie;
+  };
+  const portalStatus = async (cookie: string): Promise<number> => {
+    const response = await fetch(`${base}/portal/password`, { headers: { cookie }, redirect: "manual" });
+    return response.status;
+  };
+
+  const firstCookie = await signIn(tempPassword);
+  assert.equal(await portalStatus(firstCookie), 200);
+  assert.equal(registry.student(student.id)?.sessionVersion, 0);
+
+  const change = await fetch(`${base}/portal/password`, {
+    method: "POST",
+    headers: {
+      cookie: firstCookie,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      current: tempPassword,
+      next: "a-much-longer-password",
+      confirm: "a-much-longer-password",
+    }).toString(),
+    redirect: "manual",
+  });
+  assert.equal(change.status, 303);
+  assert.equal(registry.student(student.id)?.sessionVersion, 1);
+  assert.equal(await portalStatus(firstCookie), 303, "the session from before the change is revoked");
+
+  const secondCookie = (change.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+  assert.match(secondCookie, /^atheniq_student=/);
+  assert.equal(await portalStatus(secondCookie), 200, "the response reissues a current session");
+
+  const reset = registry.resetAccess(student.id);
+  assert.equal(reset.ok, true);
+  assert.equal(registry.student(student.id)?.sessionVersion, 2);
+  assert.equal(await portalStatus(secondCookie), 303, "a registrar reset revokes the current session");
 });
 
 test("the seeded preview student can sign in and has a reserved mailbox", () => {

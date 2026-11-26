@@ -39,16 +39,22 @@ export interface Program {
   curriculum: { term: string; courses: string[] }[];
   careers: string[];
   cohort: string;
-  applicationDeadline: string;
 }
 
 export interface Term {
   id: string;
   name: string;
+  /** ISO 8601 dates (YYYY-MM-DD), interpreted in UTC. */
   starts: string;
   ends: string;
+  applicationsOpen: string;
+  applicationsPriority: string;
+  applicationsClose: string;
   registrationCloses: string;
-  /** `open` accepts registrations; `waitlist` records interest; `closed` does not. */
+  /**
+   * `open` accepts registrations until `registrationCloses`; `waitlist` records
+   * interest; `closed` does not. The date is enforced either way.
+   */
   registration: "open" | "waitlist" | "closed";
   intake: boolean;
 }
@@ -65,31 +71,117 @@ export const TERMS: Term[] = [
   {
     id: "2027A",
     name: "Fall 2027",
-    starts: "September 14, 2027",
-    ends: "December 17, 2027",
-    registrationCloses: "August 28, 2027",
+    starts: "2027-09-14",
+    ends: "2027-12-17",
+    applicationsOpen: "2026-09-01",
+    applicationsPriority: "2027-01-15",
+    applicationsClose: "2027-04-30",
+    registrationCloses: "2027-08-28",
     registration: "open",
     intake: true,
   },
   {
     id: "2028B",
     name: "Spring 2028",
-    starts: "January 11, 2028",
-    ends: "March 31, 2028",
-    registrationCloses: "December 4, 2027",
+    starts: "2028-01-11",
+    ends: "2028-03-31",
+    applicationsOpen: "2027-05-01",
+    applicationsPriority: "2027-10-15",
+    applicationsClose: "2027-12-04",
+    registrationCloses: "2027-12-04",
     registration: "open",
     intake: true,
   },
   {
     id: "2028C",
     name: "Summer 2028",
-    starts: "April 24, 2028",
-    ends: "July 7, 2028",
-    registrationCloses: "March 20, 2028",
+    starts: "2028-04-24",
+    ends: "2028-07-07",
+    applicationsOpen: "2028-01-10",
+    applicationsPriority: "2028-02-15",
+    applicationsClose: "2028-03-20",
+    registrationCloses: "2028-03-20",
     registration: "waitlist",
     intake: false,
   },
 ];
+
+const DAY_MS = 86_400_000;
+
+function utcMidnight(iso: string): number {
+  const value = Date.parse(`${iso}T00:00:00Z`);
+  if (Number.isNaN(value)) throw new Error(`content.ts: ${iso} is not an ISO date`);
+  return value;
+}
+
+function endOfUtcDay(iso: string): number {
+  return utcMidnight(iso) + DAY_MS - 1;
+}
+
+/** A long, stable date for copy and errors: "September 14, 2027". */
+export function formatDate(iso: string): string {
+  const date = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+export type ApplicationState = "not-accepting" | "before" | "open" | "after";
+
+/** Applications run from the start of `applicationsOpen` through the end of `applicationsClose`, UTC. */
+export function applicationState(term: Term, now: Date = new Date()): ApplicationState {
+  if (!term.intake) return "not-accepting";
+  const time = now.getTime();
+  if (time < utcMidnight(term.applicationsOpen)) return "before";
+  if (time > endOfUtcDay(term.applicationsClose)) return "after";
+  return "open";
+}
+
+export type RegistrationState = "open" | "waitlist" | "closed" | "past-deadline";
+
+export function registrationState(term: Term, now: Date = new Date()): RegistrationState {
+  if (term.registration === "waitlist") return "waitlist";
+  if (term.registration === "closed") return "closed";
+  if (now.getTime() > endOfUtcDay(term.registrationCloses)) return "past-deadline";
+  return "open";
+}
+
+export function openApplicationTerms(now: Date = new Date()): Term[] {
+  return TERMS.filter((term) => applicationState(term, now) === "open");
+}
+
+/**
+ * The intake the site should talk about: one accepting applications now, else
+ * the next to open, else the most recently closed intake.
+ */
+export function applicationCycle(now: Date = new Date()): Term {
+  const open = TERMS.find((term) => applicationState(term, now) === "open");
+  if (open) return open;
+  const upcoming = TERMS.filter((term) => applicationState(term, now) === "before").sort((a, b) =>
+    a.applicationsOpen.localeCompare(b.applicationsOpen),
+  )[0];
+  if (upcoming) return upcoming;
+  const latest = TERMS.filter((term) => term.intake).sort((a, b) =>
+    b.applicationsClose.localeCompare(a.applicationsClose),
+  )[0];
+  if (!latest) throw new Error("content.ts: the institution has no intake terms");
+  return latest;
+}
+
+export function applicationWindowLabel(term: Term): string {
+  return `${formatDate(term.applicationsOpen)} – ${formatDate(term.applicationsClose)}; priority ${formatDate(term.applicationsPriority)}`;
+}
+
+export function registrationLabel(term: Term, now: Date = new Date()): string {
+  const state = registrationState(term, now);
+  if (state === "open") return `open until ${formatDate(term.registrationCloses)}`;
+  if (state === "past-deadline") return `closed ${formatDate(term.registrationCloses)}`;
+  return state;
+}
 
 export const COURSES: Course[] = [
   {
@@ -305,7 +397,6 @@ export const PROGRAMS: Program[] = [
       "Further study (MSc or PhD)",
     ],
     cohort: "Cohorts of 60, studios of 18",
-    applicationDeadline: "January 15, 2027 (priority), April 30, 2027 (final)",
   },
   {
     slug: "msc-machine-intelligence",
@@ -343,7 +434,6 @@ export const PROGRAMS: Program[] = [
       "Technical founder",
     ],
     cohort: "Cohorts of 40, studios of 16",
-    applicationDeadline: "January 15, 2027 (priority), April 30, 2027 (final)",
   },
   {
     slug: "mpt-public-interest-tech",
@@ -382,7 +472,6 @@ export const PROGRAMS: Program[] = [
       "Regulatory technologist",
     ],
     cohort: "Cohorts of 24",
-    applicationDeadline: "January 15, 2027 (priority), April 30, 2027 (final)",
   },
   {
     slug: "pgcert-ai-governance",
@@ -419,7 +508,6 @@ export const PROGRAMS: Program[] = [
       "Policy advisor",
     ],
     cohort: "Cohorts of 45",
-    applicationDeadline: "Rolling; Fall 2027 cohort closes June 30, 2027",
   },
 ];
 
@@ -494,33 +582,42 @@ export const STATS = [
   { value: "3", label: "intakes each year" },
 ];
 
-export const TIMELINE = [
-  {
-    date: "September 2026",
-    title: "Applications open",
-    body: "Choose a program, write a short statement and submit. There is no application fee.",
-  },
-  {
-    date: "January 15, 2027",
-    title: "Priority deadline",
-    body: "Priority applicants are interviewed first and considered for every scholarship round.",
-  },
-  {
-    date: "February–April 2027",
-    title: "Interviews and decisions",
-    body: "A 30-minute conversation with a member of faculty. Decisions are issued within three weeks.",
-  },
-  {
-    date: "June–August 2027",
-    title: "Enrollment and account issuance",
-    body: "Accept your offer, pay the first installment, and receive your student number and @atheniq.institute address.",
-  },
-  {
-    date: "September 14, 2027",
-    title: "Fall term begins",
-    body: "Orientation week, then studios. Registration for term-one courses opens in August.",
-  },
-];
+export interface TimelineEntry {
+  date: string;
+  title: string;
+  body: string;
+}
+
+/** The admissions calendar, generated from the term's dates. */
+export function timelineFor(term: Term): TimelineEntry[] {
+  return [
+    {
+      date: formatDate(term.applicationsOpen),
+      title: "Applications open",
+      body: "Choose a program, write a short statement and submit. There is no application fee.",
+    },
+    {
+      date: formatDate(term.applicationsPriority),
+      title: "Priority deadline",
+      body: "Priority applicants are interviewed first and considered for every scholarship round.",
+    },
+    {
+      date: `${formatDate(term.applicationsPriority)} – ${formatDate(term.applicationsClose)}`,
+      title: "Interviews and decisions",
+      body: "A 30-minute conversation with a member of faculty. Decisions are issued within three weeks.",
+    },
+    {
+      date: `${formatDate(term.applicationsClose)} – ${formatDate(term.starts)}`,
+      title: "Enrollment and account issuance",
+      body: `Accept your offer, pay the first installment, and receive your student number and @atheniq.institute address. Registration closes ${formatDate(term.registrationCloses)}.`,
+    },
+    {
+      date: formatDate(term.starts),
+      title: `${term.name} begins`,
+      body: "Orientation week, then studios.",
+    },
+  ];
+}
 
 export const FAQ = [
   {

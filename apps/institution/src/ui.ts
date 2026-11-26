@@ -7,7 +7,7 @@
  */
 
 import type { CatalogCourse } from "./catalog.ts";
-import type { Program } from "./content.ts";
+import { applicationCycle, applicationState, formatDate, type Program } from "./content.ts";
 
 const ENTITIES: Record<string, string> = {
   "&": "&amp;",
@@ -83,9 +83,17 @@ function brand(href: string, tag: string): string {
 }
 
 function topBar(): string {
+  const term = applicationCycle();
+  const state = applicationState(term);
+  const status =
+    state === "open"
+      ? `${term.name} applications are open`
+      : state === "before"
+        ? `${term.name} applications open ${formatDate(term.applicationsOpen)}`
+        : `${term.name} applications are closed`;
   return `<div class="topbar"><div class="shell topbar__inner">
-    <p>Fall 2027 applications are open</p>
-    <p class="topbar__meta">Priority deadline <strong>January 15, 2027</strong> · <a href="/admissions/apply">Apply</a></p>
+    <p>${esc(status)}</p>
+    <p class="topbar__meta">Priority deadline <strong>${esc(formatDate(term.applicationsPriority))}</strong> · <a href="/admissions/apply">Apply</a></p>
   </div></div>`;
 }
 

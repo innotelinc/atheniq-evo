@@ -57,6 +57,8 @@ export interface Student {
   schoolEmail: string;
   passwordHash: string;
   mustChangePassword: boolean;
+  /** Bumped when the password changes or access is reset; old cookies fail. */
+  sessionVersion: number;
   programSlug: string;
   termId: string;
   status: "active" | "suspended";
@@ -86,6 +88,15 @@ export interface StoreData {
 }
 
 export class StoreError extends Error {}
+
+/** Records written before session versions existed are read as version 0. */
+function withSessionVersions(data: StoreData): StoreData {
+  for (const student of data.students) {
+    const record = student as Student & { sessionVersion?: number };
+    if (typeof record.sessionVersion !== "number") record.sessionVersion = 0;
+  }
+  return data;
+}
 
 function emptyData(): StoreData {
   return { version: 1, applications: [], students: [], enrollments: [], counters: { student: 0 } };
@@ -129,7 +140,7 @@ export class Store {
       } catch (error) {
         throw new StoreError(`${file} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
       }
-      return new Store(file, validate(parsed, file));
+      return new Store(file, withSessionVersions(validate(parsed, file)));
     }
 
     const store = new Store(file, emptyData());
@@ -182,6 +193,7 @@ export class Store {
       schoolEmail: "nadia.rahman@atheniq.institute",
       passwordHash: hashPassword("atheniq-demo"),
       mustChangePassword: false,
+      sessionVersion: 0,
       programSlug: "msc-machine-intelligence",
       termId: "2027A",
       status: "active",

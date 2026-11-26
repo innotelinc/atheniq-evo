@@ -81,6 +81,17 @@ Admission is the only place a password is minted, and the plaintext is returned
 scrypt hash. If that page is lost, the registrar issues a reset; nobody can
 recover the password, including the Institute.
 
+## Dates are data
+
+Every term in `content.ts` carries ISO dates for when applications open, the
+priority deadline, when applications close, when registration closes, and when
+teaching starts. `createApplication` refuses a term before its opening date or
+after its closing date (inclusive, end of day UTC), and `register` refuses a
+term once `registrationCloses` has passed. The admissions page, the top bar, the
+program pages, the apply form, the timeline and the portal's term headers are
+generated from those same fields, so a date cannot be advertised in one place
+and enforced differently in another.
+
 ## The course catalog
 
 Courses are data, not code. The institution console's **Courses** section is the one writer of
@@ -391,7 +402,7 @@ backup.
 | Control | Implementation |
 | --- | --- |
 | Passwords | scrypt (N=16384, r=8, p=1), 16-byte salt per password, constant-time compare |
-| Sessions | HMAC-SHA256 signed cookie, HttpOnly, SameSite=Lax, Secure in production, 8-hour expiry |
+| Sessions | HMAC-SHA256 signed cookie, HttpOnly, SameSite=Lax, Secure in production, 8-hour expiry; a per-student session version is bumped on password change and registrar reset, so earlier cookies stop working |
 | Surface separation | different cookie names and signed roles; a student token is refused as staff |
 | CSRF | `Origin` must match `Host` on every POST; `Sec-Fetch-Site: cross-site` is refused by the browser/edge policy |
 | Output | every visitor-supplied value is escaped at interpolation |
