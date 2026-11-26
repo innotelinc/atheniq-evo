@@ -39,7 +39,7 @@ import { fetchTranscript } from "./bridge.ts";
 import { createMailer, type Mailer } from "./mail.ts";
 import type { Registry } from "./registry.ts";
 import type { Student } from "./store.ts";
-import { esc, layout, type Surface, type UiContext, type Viewer } from "./ui.ts";\r\nimport { handle: setupHandler } from "./views/setup.ts";
+import { esc, layout, type Surface, type UiContext, type Viewer } from "./ui.ts";
 import {
   about,
   academics,
@@ -282,7 +282,6 @@ route("public", "GET", "/verify", ({ config }) => html(200, verify(contextFor(co
 route("public", "GET", "/privacy", ({ config }) => html(200, privacy(contextFor(config))));
 route("public", "GET", "/terms", ({ config }) => html(200, terms(contextFor(config))));
 route("public", "GET", "/accessibility", ({ config }) => html(200, accessibility(contextFor(config))));
-route("public", "GET", "/setup", ({ config }) => html(200, setupHandler(contextFor(config))));
 route("public", "GET", "/portal", ({ config }) => html(200, portalSignIn(contextFor(config))));
 route("public", "GET", "/portal/signin", () => redirect("/portal"));
 route("public", "POST", "/portal/signin", (context) => {
