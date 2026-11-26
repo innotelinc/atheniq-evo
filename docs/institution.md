@@ -338,8 +338,45 @@ The ordered version of this cutover — the DNS records, the two vhosts, the por
 the edge forwards to, and how each step is proven — is `docs/cutover.md`.
 
 If another proxy sits in front, it must pass `Host` through, not rewrite it to
-the container name. Only set `TRUST_PROXY=true` when `X-Forwarded-Host` is set by
-a proxy you control; otherwise a client can choose its own surface.
+the container name. Only set `TRUST_PROXY=true` when `X-Forwarded-Host` and
+`X-Forwarded-For` are set by a proxy you control; otherwise a client can choose
+its own surface.
+
+The same flag governs the sign-in limiter. When it is true, the client address
+is the rightmost valid entry in `X-Forwarded-For` — the address the trusted
+proxy appended — so a client cannot escape its bucket by prefixing a fake
+entry. When it is false, forwarded headers are ignored and the socket peer is
+used. Compose defaults `TRUST_PROXY` to true because the service is published
+through an edge; set it false when port 8080 is exposed directly.
+
+### First run: `/setup`
+
+A fresh install has no registrar credential and no session secret, so the
+normal router cannot start. When `SESSION_SECRET`, `REGISTRAR_EMAIL` and both
+registrar password variables are empty and there is no
+`$INSTITUTION_DATA_DIR/setup.json`, the service serves only `/health` and
+`/setup`, and prints a one-time link:
+
+```
+atheniq-institution: setup required — no configuration found
+  open       https://registrar.atheniq.institute/setup?token=…
+  token      printed once per start; restarting the service rotates it
+```
+
+Open that link on the host the service answers on. Without the token `/setup`
+is `403`; once setup completes it is `404` for good. The form hashes the
+registrar password with scrypt, generates a 64-hex-character session secret,
+tests Stalwart (`STALWART_URL`, `STALWART_TOKEN`, `MAIL_DOMAIN`) when that
+provider is chosen and writes nothing if the test fails, and stores the result
+in `setup.json` through a temporary file and a rename with mode `0600`. It does
+not seed demonstration records unless asked.
+
+Restart the service to apply the file. A non-empty environment variable wins
+over it, which is why Compose passes the bootstrap-owned variables empty; the
+Coolify deploy script fills them directly and skips the wizard. A partial
+environment — say `REGISTRAR_EMAIL` set but no password — is a configuration
+error, not a fresh install. `setup.json` holds the session secret and the
+Stalwart key: treat it like `.env` in backups and access policy.
 
 Production checklist for the container:
 
@@ -353,11 +390,13 @@ INSTITUTION_SEED_DEMO=false
 MAIL_DOMAIN=atheniq.institute
 ```
 
-The service refuses to start in production with an unset or short
+The normal router refuses to serve in production with an unset or short
 `SESSION_SECRET`, no registrar credential, `COOKIE_SECURE=false`, or a failing
 Stalwart preflight (unreachable `STALWART_URL`, rejected `STALWART_TOKEN`, or a
 `MAIL_DOMAIN` that Stalwart does not serve). A service that starts misconfigured
-is worse than one that explains why it will not start.
+is worse than one that explains why it will not start. The one exception is the
+setup server above: with nothing configured at all, it serves only `/health`
+and `/setup` until the file exists.
 
 **Backups.** `institution-data` is the whole institution record. Back it up on a
 schedule, restore it into a scratch container monthly, and keep the copy off the

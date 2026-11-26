@@ -9,6 +9,8 @@
 
 # Runtime state
 data/
+# Written by /setup; holds the session secret and mail API key
+setup.json
 *.ledger.json
 *.log
 logs/

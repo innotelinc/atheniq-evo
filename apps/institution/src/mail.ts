@@ -10,7 +10,6 @@
  * https://stalw.art/docs/auth/accounts/manage and /docs/ref/object/domain.
  */
 
-import type { InstitutionConfig } from "./config.ts";
 
 export interface Mailer {
   /** "stalwart" — used in notices and the mailbox record. */
@@ -238,8 +237,17 @@ export class StalwartMailer implements Mailer {
   }
 }
 
+/** The mail settings a provider needs, whether they come from env or setup. */
+export interface MailSettings {
+  mailProvider: "local" | "stalwart";
+  mailDomain: string;
+  stalwartUrl: string;
+  stalwartToken: string;
+  stalwartQuotaBytes: number;
+}
+
 /** Null means "reserve the address in the registry only". */
-export function createMailer(config: InstitutionConfig): Mailer | null {
+export function createMailer(config: MailSettings): Mailer | null {
   if (config.mailProvider === "local") return null;
   return new StalwartMailer({
     baseUrl: config.stalwartUrl,

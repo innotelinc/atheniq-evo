@@ -41,15 +41,17 @@ services:
       REGISTRAR_ORIGIN: ${REGISTRAR_ORIGIN:-https://registrar.innotel.site}
       TRUST_PROXY: "true"
       COOKIE_SECURE: "true"
-      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in Coolify}
-      REGISTRAR_EMAIL: ${REGISTRAR_EMAIL:-registrar@atheniq.institute}
+      # Empty is allowed so a fresh install can run /setup. A non-empty value
+      # still wins over the setup file.
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      REGISTRAR_EMAIL: ${REGISTRAR_EMAIL:-}
       REGISTRAR_PASSWORD_HASH: ${REGISTRAR_PASSWORD_HASH:-}
       REGISTRAR_PASSWORD: ${REGISTRAR_PASSWORD:-}
       INSTITUTION_DATA_DIR: /data
-      INSTITUTION_SEED_DEMO: "false"
-      MAIL_PROVIDER: ${MAIL_PROVIDER:-stalwart}
-      MAIL_DOMAIN: ${MAIL_DOMAIN:-atheniq.institute}
-      STALWART_URL: ${STALWART_URL:-https://mail.innotel.us}
+      INSTITUTION_SEED_DEMO: ${INSTITUTION_SEED_DEMO:-}
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-}
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-}
+      STALWART_URL: ${STALWART_URL:-}
       STALWART_TOKEN: ${STALWART_TOKEN:-}
       STALWART_QUOTA_BYTES: ${STALWART_QUOTA_BYTES:-0}
       # Empty on purpose: no console is published here, so the portal hides the

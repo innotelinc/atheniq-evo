@@ -16,6 +16,7 @@
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { Catalog, coerceGrading, coerceModules, type CourseInput } from "./catalog.ts";
 import { coerceDraft, generateDraft, suggestCode } from "./ai.ts";
 import { programBySlug } from "./content.ts";
@@ -1228,13 +1229,44 @@ export function createInstitutionServer(deps: ServerDeps) {
   }
 }
 
-function ipOf(request: IncomingMessage, config: InstitutionConfig): string {
-  if (config.trustProxy) {
-    const forwarded = request.headers["x-forwarded-for"];
-    const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-    if (value) return value.split(",")[0]?.trim() ?? "unknown";
+function normaliseAddress(value: string): string | null {
+  let candidate = value.trim();
+  if (!candidate) return null;
+  if (candidate.startsWith("[")) {
+    const end = candidate.indexOf("]");
+    if (end < 0) return null;
+    candidate = candidate.slice(1, end);
+  } else if ((candidate.match(/:/g) ?? []).length === 1) {
+    // A bare IPv4 address with a port; IPv6 with a port must be bracketed.
+    candidate = candidate.split(":")[0] ?? "";
   }
-  return request.socket.remoteAddress ?? "unknown";
+  if (candidate.toLowerCase().startsWith("::ffff:")) candidate = candidate.slice(7);
+  return isIP(candidate) ? candidate : null;
+}
+
+/**
+ * The address the sign-in limiter buckets on.
+ *
+ * Without a trusted proxy the socket peer is the only address the caller
+ * cannot choose. With one, the proxy appends the address it saw to
+ * `X-Forwarded-For`, so the rightmost valid entry is the truthful one; entries
+ * to its left may have been supplied by the client and are ignored. A malformed
+ * header falls back to the peer instead of inventing a key.
+ */
+function ipOf(request: IncomingMessage, config: InstitutionConfig): string {
+  const peer = normaliseAddress(request.socket.remoteAddress ?? "") ?? "unknown";
+  if (!config.trustProxy) return peer;
+
+  const forwarded = request.headers["x-forwarded-for"];
+  const value = Array.isArray(forwarded) ? forwarded.join(",") : forwarded;
+  if (!value) return peer;
+
+  const hops = value.split(",");
+  for (let index = hops.length - 1; index >= 0; index -= 1) {
+    const address = normaliseAddress(hops[index] ?? "");
+    if (address) return address;
+  }
+  return peer;
 }
 
 function errorPage(ctx: UiContext, surface: Surface, viewer: Viewer | null, message: string): string {

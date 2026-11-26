@@ -84,9 +84,12 @@ CONSOLE_BASE_URL="https://console.atheniq.institute"
 CREDENTIAL_VERIFY_URL="https://console.atheniq.institute/verify"
 ```
 
-`TRUST_PROXY` is deliberately absent: the edge must preserve `Host`, and the
-institution chooses its surface from it. Set `TRUST_PROXY=true` only if the proxy
-in front rewrites `Host` and sets `X-Forwarded-Host` itself.
+Compose defaults `TRUST_PROXY` to true: the service is published through the
+edge, which sets `X-Forwarded-Host` and appends the client to
+`X-Forwarded-For`. That gives the sign-in limiter one bucket per client instead
+of one for the edge. Set `TRUST_PROXY=false` when port 8080 is reachable
+directly; forwarded headers are then ignored for both the surface and the
+limiter.
 
 The three secrets are generated, not chosen (`openssl rand -hex 32`, `-hex 24`,
 `-hex 24`), and each pair holds one value on both sides of its boundary:

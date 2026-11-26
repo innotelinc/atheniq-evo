@@ -15,7 +15,7 @@
   "scripts": {
     "start": "node apps/bridge/src/main.ts",
     "dev": "node --watch apps/bridge/src/main.ts",
-    "test": "node --test apps/bridge/test/auth.test.ts apps/bridge/test/flow.test.ts apps/institution/test/institution.test.ts apps/institution/test/mail.test.ts apps/institution/test/catalog.test.ts apps/institution/test/purge-demo.test.ts",
+    "test": "node --test apps/bridge/test/auth.test.ts apps/bridge/test/flow.test.ts apps/institution/test/institution.test.ts apps/institution/test/mail.test.ts apps/institution/test/catalog.test.ts apps/institution/test/setup.test.ts apps/institution/test/signin-limiter.test.ts apps/institution/test/purge-demo.test.ts",
     "typecheck": "tsc -p apps/bridge/tsconfig.json --noEmit && tsc -p apps/institution/tsconfig.json --noEmit",
     "check:compose": "node scripts/check-compose-env.mjs",
     "check:openmaic-csp": "node scripts/check-openmaic-csp.mjs",

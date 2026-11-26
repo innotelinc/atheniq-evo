@@ -102,6 +102,13 @@ function bool(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean 
 /** A development-only key. Never accepted when NODE_ENV=production. */
 const DEV_SESSION_SECRET = "atheniq-institution-dev-session-secret-not-for-production";
 
+export const DEFAULT_DATA_DIR = "data/institution";
+
+/** Where the registry, catalog and first-run setup file live. */
+export function institutionDataDir(env: NodeJS.ProcessEnv = process.env): string {
+  return read(env, "INSTITUTION_DATA_DIR", DEFAULT_DATA_DIR) || DEFAULT_DATA_DIR;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): InstitutionConfig {
   const nodeEnv = read(env, "NODE_ENV", "development");
   const production = nodeEnv === "production";
@@ -175,7 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): InstitutionCon
     port: integer(env, "PORT", 8080, true),
     publicOrigin,
     registrarOrigin,
-    dataDir: read(env, "INSTITUTION_DATA_DIR", "data/institution"),
+    dataDir: institutionDataDir(env),
     sessionSecret,
     registrarEmail,
     registrarPassword,

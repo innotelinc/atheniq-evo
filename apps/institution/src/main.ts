@@ -7,7 +7,16 @@
  * misconfigured is worse than one that explains why it will not start.
  */
 
-import { ConfigError, describeConfig, loadConfig, type InstitutionConfig } from "./config.ts";
+import {
+  loadConfigWithSetup,
+  missingBootstrapValues,
+  readSetupRecord,
+  SetupError,
+  setupPath,
+  startSetupServer,
+  type SetupRecord,
+} from "./bootstrap.ts";
+import { ConfigError, describeConfig, institutionDataDir, type InstitutionConfig } from "./config.ts";
 import { Catalog, CatalogError } from "./catalog.ts";
 import { Store, StoreError } from "./store.ts";
 import { Registry } from "./registry.ts";
@@ -20,11 +29,38 @@ function fail(message: string): never {
 }
 
 async function main(): Promise<void> {
+  const dataDir = institutionDataDir(process.env);
+  let record: SetupRecord | null;
+  try {
+    record = readSetupRecord(dataDir);
+  } catch (error) {
+    fail(error instanceof SetupError ? error.message : String(error));
+  }
+
+  // Nothing has configured the institution yet: serve only the setup wizard.
+  // A partially configured environment is not this case; it is a mistake, and
+  // the normal validator below names the setting to fix.
+  if (!record && missingBootstrapValues(process.env)) {
+    const parsedPort = Number.parseInt(process.env.PORT ?? "8080", 10);
+    const port = Number.isFinite(parsedPort) ? parsedPort : 8080;
+    const publicOrigin = (process.env.INSTITUTION_ORIGIN?.trim() || `http://localhost:${port}`).replace(/\/+$/, "");
+    const host = process.env.HOST ?? "0.0.0.0";
+    const setup = startSetupServer({ dataDir, publicOrigin });
+    setup.server.on("error", (error) => fail(`could not listen: ${error.message}`));
+    setup.server.listen(port, host, () => {
+      console.log("atheniq-institution: setup required — no configuration found");
+      console.log(`  open       ${publicOrigin}/setup?token=${setup.token}`);
+      console.log("  token      printed once per start; restarting the service rotates it");
+      console.log(`  writes     ${setupPath(dataDir)} (0600)`);
+    });
+    return;
+  }
+
   let config: InstitutionConfig;
   try {
-    config = loadConfig();
+    config = loadConfigWithSetup(process.env);
   } catch (error) {
-    fail(error instanceof ConfigError ? error.message : String(error));
+    fail(error instanceof ConfigError || error instanceof SetupError ? error.message : String(error));
   }
 
   for (const warning of config.warnings) console.warn(`atheniq-institution: warning: ${warning}`);

@@ -195,14 +195,18 @@ services:
       REGISTRAR_ORIGIN: ${REGISTRAR_ORIGIN:-https://registrar.atheniq.institute}
       INSTITUTION_DATA_DIR: /data
       # Signs student and staff session cookies. Required; 32+ characters.
-      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
-      REGISTRAR_EMAIL: ${REGISTRAR_EMAIL:-registrar@atheniq.institute}
+      # Empty is allowed so a fresh install can boot the setup wizard; the
+      # service still refuses to serve without a secret in production.
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # Bootstrap-owned values stay empty unless the operator sets them, so a
+      # value written by /setup is not shadowed by a Compose default.
+      REGISTRAR_EMAIL: ${REGISTRAR_EMAIL:-}
       # Set either the scrypt hash (preferred) or a bootstrap password. The
       # service refuses to start in production when both are empty.
       REGISTRAR_PASSWORD: ${REGISTRAR_PASSWORD:-}
       REGISTRAR_PASSWORD_HASH: ${REGISTRAR_PASSWORD_HASH:-}
-      MAIL_DOMAIN: ${MAIL_DOMAIN:-atheniq.institute}
-      MAIL_PROVIDER: ${MAIL_PROVIDER:-local}
+      MAIL_DOMAIN: ${MAIL_DOMAIN:-}
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-}
       STALWART_URL: ${STALWART_URL:-}
       STALWART_TOKEN: ${STALWART_TOKEN:-}
       STALWART_QUOTA_BYTES: ${STALWART_QUOTA_BYTES:-0}
@@ -222,7 +226,13 @@ services:
       OPENMAIC_PUBLIC_URL: ${OPENMAIC_PUBLIC_URL:-}
       ATHENIQ_CLASSROOM_COOKIE_DOMAIN: ${CLASSROOM_COOKIE_DOMAIN:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      INSTITUTION_SEED_DEMO: ${INSTITUTION_SEED_DEMO:-false}
+      # The institution is published through an edge that sets
+      # X-Forwarded-For. Trusting it gives the sign-in limiter one bucket per
+      # client instead of one shared bucket for the edge's address. Set false
+      # only when :8080 is reachable directly, where forwarded headers are
+      # client-controlled and must be ignored.
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      INSTITUTION_SEED_DEMO: ${INSTITUTION_SEED_DEMO:-}
     volumes:
       - institution-data:/data
     ports:
