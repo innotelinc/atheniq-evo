@@ -385,22 +385,29 @@ The three patched services and the bridge form a chain of trust:
 | 303 back to the portal with a note | payment outstanding, no enrollment, or the bridge refused | the note is the bridge's own message |
 | Classroom opens but shows an empty library | the cookie did not reach OpenMAIC's host | `ATHENIQ_CLASSROOM_COOKIE_DOMAIN` must be the shared parent domain, and the session must be HTTPS in production (`Secure`) |
 | 401 from `/api/atheniq/completion` | token expired (15 min) or the two JWT secrets differ | re-enter from the portal; compare `BRIDGE_JWT_SECRET` with `ATHENIQ_BRIDGE_JWT_SECRET` |
-| Completion `partial`, `lms-grade: not_configured` | no numeric user id, or no `LMS_GRADE_USAGE_ID` | add the learner to `LMS_USER_MAP_PATH`; set the usage id; then `POST /v1/completions?retry=1` with the same body |
-| Completion `partial`, `console-completion: failed` | console was down, or the service tokens differ | the step's `detail` carries the console's sentence; fix, then retry |
+| Completion `partial`, `lms-grade: not_configured` | no numeric user id, or no `LMS_GRADE_USAGE_ID` | add the learner to `LMS_USER_MAP_PATH`; set the usage id. The sweep will pick it up at the next backoff; `POST /v1/completions?retry=1` retries immediately. |
+| Completion `partial`, `console-completion: failed` | console was down, or the service tokens differ | the step's `detail` carries the console's sentence; fix it and the scheduled sweep retries with backoff (or use `?retry=1`) |
+| `completion-retries` health check `failed` | a completion has stayed partial past `BRIDGE_RETRY_ALERT_AFTER_MS` | `GET /v1/completions/needs-retry`; the alert is also logged as `[bridge] ALERT …` |
 | Award `queued_local` | no Signara key | set `SIGNARA_API_KEY`, then re-submit the award in the console |
 | `409 UNKNOWN_CLASSROOM` | a completion for a classroom this bridge never launched (a wiped ledger, or a second bridge) | completions must come from the launch that created them; check `BRIDGE_DATA_DIR` is the durable volume |
 | Ledger parse error at boot | the file is corrupt | the process refuses to start rather than re-awarding; restore the file or the volume |
 
 ## Backfill and repair
 
-The ledger is a plain JSON file and every completion is replayable.
+The ledger is a plain JSON file and every completion is replayable. Partial
+completions are retried by the in-process sweep on their own backoff; the list
+below is the operator's view of that queue.
 
 ```bash
 # Everything a learner has done in AI classrooms
 curl -s -H "authorization: Bearer $BRIDGE_SERVICE_TOKEN" \
   localhost:8787/v1/learners/lrn_…/transcript | jq
 
-# A stuck completion: same body, retry flag
+# Completions still waiting for delivery, oldest first
+curl -s -H "authorization: Bearer $BRIDGE_SERVICE_TOKEN" \
+  localhost:8787/v1/completions/needs-retry | jq
+
+# A stuck completion: same body, retry flag (bypasses the backoff wait)
 curl -s -X POST localhost:8787/v1/completions?retry=1 \
   -H "x-atheniq-timestamp: $(date +%s)" \
   -H "x-atheniq-signature: $(…)":      # sign with BRIDGE_HOOK_SECRET
@@ -411,10 +418,12 @@ on the award, so an override is never invisible.
 
 ## What to watch
 
-- `/health` — `ok: false` means an upstream is failing, not that the bridge is
-  down (the bridge answering at all is the liveness signal).
-- `completion.fanned-out` events with `partial` — the queue of things a human
-  should look at.
+- `/health` — `ok: false` means an upstream is failing or a completion is stale,
+  not that the bridge is down (the bridge answering at all is the liveness
+  signal). `retries.stale` counts undelivered completions past the alert window.
+- `completion.retried` and `completion.retry-failed` events — the sweep's work.
+  A `completion.alert` event marks the one-time alert for a record that needs a
+  person; `GET /v1/completions/needs-retry` is the same queue.
 - `credential.issued` with a status other than `issued` — an award waiting on
   Signara.
 - The ledger's growth: `completions` is capped at 50,000, `events` at 5,000. Their

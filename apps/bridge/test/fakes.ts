@@ -10,7 +10,7 @@
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { LedgerStore } from "../src/ledger.ts";
 import { createBridgeServer } from "../src/app.ts";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig, type Config } from "../src/config.ts";
 
 export interface Recorded {
   method: string;
@@ -75,6 +75,7 @@ export interface Stack {
   console: Fake;
   omniroute: Fake;
   ledger: LedgerStore;
+  config: Config;
   secret: string;
   serviceToken: string;
   hookSecret: string;
@@ -84,13 +85,17 @@ export interface Stack {
 export interface StackOptions {
   /** Let a test make the console fail its first call. */
   consoleFailsOnce?: boolean;
+  /** Make the console fail this many calls; `Infinity` for a sustained outage. */
+  consoleFailures?: number;
+  /** Extra environment for `loadConfig`, e.g. retry timing. */
+  env?: Record<string, string>;
   /** Configure the LMS grade write by giving a numeric user id for this learner. */
   lmsUserMap?: Record<string, number>;
   withLmsCredentials?: boolean;
 }
 
 export async function startStack(options: StackOptions = {}): Promise<Stack> {
-  let consoleFailuresLeft = options.consoleFailsOnce ? 1 : 0;
+  let consoleFailuresLeft = options.consoleFailures ?? (options.consoleFailsOnce ? 1 : 0);
 
   const openmaic = await fakeServer((call) => {
     if (call.path === "/api/health") return { status: 200, body: { ok: true } };
@@ -167,6 +172,7 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
     OMNIROUTE_API_KEY: "omniroute-key",
     OMNIROUTE_MODEL: "auto/best-chat",
     BRIDGE_PROBE_TIMEOUT_MS: "2000",
+    ...options.env,
   } as NodeJS.ProcessEnv);
 
   const ledger = new LedgerStore(`${process.cwd()}/data/test/ledger-${Date.now()}-${Math.random()}.json`);
@@ -195,6 +201,7 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
     console: consoleFake,
     omniroute,
     ledger,
+    config,
     secret,
     serviceToken,
     hookSecret,

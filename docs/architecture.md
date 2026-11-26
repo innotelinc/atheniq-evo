@@ -120,7 +120,10 @@ Four properties this ordering buys:
    completion made possible; the bridge awards exactly that.
 4. **Partial failure is visible and repairable.** Each step reports
    `ok | skipped | failed | not_configured` with an HTTP status and a sentence.
-   `?retry=1` re-runs only the unfinished steps.
+   `?retry=1` re-runs only the unfinished steps. A scheduled sweep also retries
+   every partial record with exponential backoff; `GET /v1/completions/needs-retry`
+   lists the backlog, and a record that stays partial past the alert window
+   raises one alert and fails the `completion-retries` health check.
 
 ## Failure semantics
 

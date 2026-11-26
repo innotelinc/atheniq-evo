@@ -34,6 +34,7 @@ import { probeOpenMaic } from "./clients/openmaic.ts";
 import { probeConsole } from "./clients/console.ts";
 import { listModels, probeGateway } from "./clients/omniroute.ts";
 import type { Fetcher } from "./http.ts";
+import { needsRetry, retrySummary } from "./retry.ts";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const SERVICE_NAME = "atheniq-bridge";
@@ -146,15 +147,26 @@ async function health(deps: HandlerDeps): Promise<HealthResponse> {
     probeGateway({ ...deps.config.omniroute, fetcher: deps.fetcher, timeoutMs: timeout }),
   ]);
 
-  const checks = [
+  const retries = retrySummary(deps);
+  const checks: HealthResponse["checks"] = [
     { name: "lms", ...lms },
     { name: "openmaic", ...openmaic },
     { name: "console", ...consoleProbe },
     { name: "omniroute", ...gateway },
+    {
+      name: "completion-retries",
+      status: retries.stale > 0 ? "failed" : retries.count > 0 ? "degraded" : "ok",
+      detail:
+        retries.count === 0
+          ? "No completion is waiting for a retry."
+          : `${retries.count} completion(s) partial, ${retries.stale} stale; oldest ${retries.oldestAgeSeconds}s.`,
+    },
   ];
 
   // The bridge is up when it can serve; a missing upstream is `degraded`, not
   // `failed`, so a monitor does not page on a deliberately unconfigured dev box.
+  // A completion that stayed partial past its alert window is different: it is
+  // undelivered work, so it fails the check and pages.
   const failed = checks.some((check) => check.status === "failed");
   const uptimeSeconds = Math.round(
     (Date.now() - (deps.startedAt ?? new Date()).getTime()) / 1000,
@@ -166,6 +178,7 @@ async function health(deps: HandlerDeps): Promise<HealthResponse> {
     service: SERVICE_NAME,
     uptimeSeconds,
     checks,
+    retries,
   };
 }
 
@@ -211,6 +224,17 @@ async function route(deps: HandlerDeps, request: IncomingMessage, rawBody: strin
     return json(200, result);
   }
 
+  if (path === "/v1/completions/needs-retry" && method === "GET") {
+    serviceRequired(request, deps.config);
+    const records = needsRetry(deps, now);
+    return json(200, {
+      ok: true,
+      count: records.length,
+      stale: records.filter((record) => record.stale).length,
+      records,
+    });
+  }
+
   if (path === "/v1/credentials" && method === "POST") {
     serviceRequired(request, deps.config);
     const parsed = parseIssueCredentialRequest(parseJson(rawBody));
@@ -235,7 +259,15 @@ async function route(deps: HandlerDeps, request: IncomingMessage, rawBody: strin
     return json(200, record);
   }
 
-  if (["/v1/sso/classroom", "/v1/classrooms", "/v1/completions", "/v1/credentials"].includes(path)) {
+  if (
+    [
+      "/v1/sso/classroom",
+      "/v1/classrooms",
+      "/v1/completions",
+      "/v1/completions/needs-retry",
+      "/v1/credentials",
+    ].includes(path)
+  ) {
     return failure(405, "METHOD_NOT_ALLOWED", `${method} is not allowed on ${path}.`);
   }
   return failure(404, "NOT_FOUND", `No route for ${method} ${path}.`);

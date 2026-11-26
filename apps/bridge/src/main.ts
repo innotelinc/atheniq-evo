@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { ConfigError, describeConfig, loadConfig, type Config } from "./config.ts";
 import { LedgerStore } from "./ledger.ts";
 import { createBridgeServer } from "./app.ts";
+import { startRetrySweep } from "./retry.ts";
 
 async function readUserMap(path: string | undefined): Promise<Record<string, number>> {
   if (!path) return {};
@@ -61,6 +62,14 @@ async function start(): Promise<void> {
     log: (line) => console.log(`[bridge] ${line}`),
   });
 
+  const sweep = startRetrySweep({
+    config,
+    ledger,
+    lmsUserMap,
+    lmsUsernameMap,
+    alert: (line) => console.error(`[bridge] ALERT ${line}`),
+  });
+
   server.listen(config.port, () => {
     const snapshot = ledger.snapshot();
     console.log(`[bridge] listening on :${config.port}`, JSON.stringify(describeConfig(config)));
@@ -71,6 +80,7 @@ async function start(): Promise<void> {
 
   const stop = (signal: string) => {
     console.log(`[bridge] ${signal} — closing`);
+    sweep.stop();
     server.close(() => process.exit(0));
     // A hung upstream must not hold the process open forever.
     setTimeout(() => process.exit(0), 5_000).unref();

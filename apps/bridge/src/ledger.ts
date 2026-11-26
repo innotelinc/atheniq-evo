@@ -32,6 +32,17 @@ export interface ClassroomRecord {
   createdBy: string;
 }
 
+export interface RetryState {
+  /** Automatic retries already made (0 means the first is still pending). */
+  attempts: number;
+  /** ISO instant the sweep may next retry this record. */
+  nextAttemptAt: string;
+  lastAttemptAt?: string;
+  lastError?: string;
+  /** Set once the record stayed partial long enough to alert. */
+  alertedAt?: string;
+}
+
 export interface CompletionRecord {
   id: string;
   idempotencyKey: string;
@@ -53,6 +64,8 @@ export interface CompletionRecord {
   status: "pending" | "partial" | "complete";
   /** Whether the caller asked for a certificate; never inferred. */
   issueCredential: boolean;
+  /** Present while the completion is partial and the sweep still owes it a retry. */
+  retry?: RetryState;
 }
 
 export interface CredentialRecord {

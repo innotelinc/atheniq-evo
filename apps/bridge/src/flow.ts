@@ -31,7 +31,13 @@ import {
 } from "./contracts.ts";
 import { signClassroomToken } from "./auth.ts";
 import type { Config } from "./config.ts";
-import { LedgerStore, newId, type ClassroomRecord, type CompletionRecord } from "./ledger.ts";
+import {
+  LedgerStore,
+  newId,
+  type ClassroomRecord,
+  type CompletionRecord,
+  type RetryState,
+} from "./ledger.ts";
 import { lmsCompletionStep, lmsGradeStep } from "./clients/lms.ts";
 import { startClassroom } from "./clients/openmaic.ts";
 import { completeEnrollment, issueCredential } from "./clients/console.ts";
@@ -56,6 +62,8 @@ export interface FlowDeps {
   lmsUserMap?: Record<string, number>;
   /** Open edX username → numeric user id. */
   lmsUsernameMap?: Record<string, number>;
+  /** Where a completion that stays partial raises its one alert. */
+  alert?: (line: string) => void;
 }
 
 function clock(deps: FlowDeps): Date {
@@ -373,6 +381,84 @@ async function runSteps(
   };
 }
 
+const retrying = new Set<string>();
+
+function initialRetry(now: Date, config: Config): RetryState {
+  return {
+    attempts: 0,
+    nextAttemptAt: new Date(now.getTime() + config.retry.baseMs).toISOString(),
+  };
+}
+
+/** Schedule the next automatic attempt, doubling the delay up to the cap. */
+function nextRetry(record: CompletionRecord, now: Date, config: Config, error?: string): RetryState {
+  const attempts = (record.retry?.attempts ?? 0) + 1;
+  const delay = Math.min(config.retry.baseMs * 2 ** Math.min(attempts - 1, 16), config.retry.maxMs);
+  return {
+    attempts,
+    nextAttemptAt: new Date(now.getTime() + delay).toISOString(),
+    lastAttemptAt: now.toISOString(),
+    ...(error ? { lastError: error } : {}),
+    ...(record.retry?.alertedAt ? { alertedAt: record.retry.alertedAt } : {}),
+  };
+}
+
+/**
+ * Re-run the unfinished steps of one partial completion.
+ *
+ * Used by `?retry=1` and by the scheduled sweep, so both paths share the same
+ * idempotent step reuse and the same backoff bookkeeping. A completion that is
+ * already complete is returned untouched.
+ */
+export async function retryCompletion(deps: FlowDeps, completionId: string): Promise<CompletionRecord> {
+  const existing = deps.ledger.snapshot().completions.find((item) => item.id === completionId);
+  if (!existing) throw new FlowError(404, "NOT_FOUND", "No such completion.");
+  if (existing.status !== "partial" || retrying.has(existing.id)) return existing;
+
+  retrying.add(existing.id);
+  const now = clock(deps);
+  try {
+    const rerun = await runSteps(deps, existing, true);
+    const status = finalStatus(rerun.steps);
+    const stale = now.getTime() - Date.parse(existing.receivedAt) >= deps.config.retry.alertAfterMs;
+    const shouldAlert = status === "partial" && stale && !existing.retry?.alertedAt;
+
+    const updated = await deps.ledger.update((data) => {
+      const record = data.completions.find((item) => item.id === existing.id);
+      if (!record) return existing;
+      record.steps = rerun.steps;
+      record.credential = rerun.credential;
+      record.status = status;
+      if (status === "complete") {
+        delete record.retry;
+      } else {
+        record.retry = nextRetry(existing, now, deps.config);
+        if (shouldAlert && record.retry) record.retry.alertedAt = now.toISOString();
+      }
+      deps.ledger.recordEvent(data, "completion.retried", record.id, `Retry finished as ${status}.`, now);
+      return structuredClone(record);
+    });
+
+    if (shouldAlert) {
+      deps.alert?.(
+        `completion ${updated.id} (${updated.learnerId}, ${updated.courseKey}) has been partial since ${updated.receivedAt} and is still undelivered after ${updated.retry?.attempts ?? 0} retries`,
+      );
+    }
+    return updated;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await deps.ledger.update((data) => {
+      const record = data.completions.find((item) => item.id === existing.id);
+      if (!record) return;
+      record.retry = nextRetry(record, now, deps.config, message);
+      deps.ledger.recordEvent(data, "completion.retry-failed", record.id, message, now);
+    });
+    throw error;
+  } finally {
+    retrying.delete(existing.id);
+  }
+}
+
 /** Accept one completion. */
 export async function completeClassroom(
   deps: FlowDeps,
@@ -384,17 +470,7 @@ export async function completeClassroom(
 
   if (existing) {
     if (!options.retry) return toResponse(existing, true);
-    const rerun = await runSteps(deps, existing, true);
-    const updated = await deps.ledger.update((data) => {
-      const record = data.completions.find((item) => item.id === existing.id);
-      if (!record) return existing;
-      record.steps = rerun.steps;
-      record.credential = rerun.credential;
-      record.status = finalStatus(rerun.steps);
-      deps.ledger.recordEvent(data, "completion.retried", record.id, `Retry finished as ${record.status}.`, clock(deps));
-      return structuredClone(record);
-    });
-    return toResponse(updated, true);
+    return toResponse(await retryCompletion(deps, existing.id), true);
   }
 
   const classroom = deps.ledger.snapshot().classrooms.find((item) => item.id === input.classroomId);
@@ -448,9 +524,11 @@ export async function completeClassroom(
   const stored = await deps.ledger.update((data) => {
     const item = data.completions.find((entry) => entry.id === record.id);
     if (!item) return record;
+    const status = finalStatus(ran.steps);
     item.steps = ran.steps;
     item.credential = ran.credential;
-    item.status = finalStatus(ran.steps);
+    item.status = status;
+    if (status === "partial") item.retry = initialRetry(clock(deps), deps.config);
     if (ran.credential) {
       data.credentials.push({
         id: newId("crd"),

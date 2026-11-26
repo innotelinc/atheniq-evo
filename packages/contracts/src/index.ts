@@ -212,6 +212,8 @@ export interface HealthResponse {
   service: string;
   uptimeSeconds: number;
   checks: { name: string; status: "ok" | "degraded" | "failed" | "not_configured"; detail: string }[];
+  /** Completions still waiting for delivery; `stale` means past the alert window. */
+  retries: { count: number; stale: number; oldestAgeSeconds: number };
 }
 
 /* ------------------------------------------------------------------ */

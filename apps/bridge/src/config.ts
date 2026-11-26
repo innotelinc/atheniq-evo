@@ -25,6 +25,18 @@ export interface OmniRouteConfig {
   model: string;
 }
 
+export interface RetryConfig {
+  /** The in-process sweep is off when false; `?retry=1` still works. */
+  enabled: boolean;
+  /** How often the sweep looks for due records. */
+  intervalMs: number;
+  /** First retry delay; doubles per attempt up to `maxMs`. */
+  baseMs: number;
+  maxMs: number;
+  /** How long a completion may stay partial before it is reported as stale. */
+  alertAfterMs: number;
+}
+
 export interface Config {
   port: number;
   origin: string;
@@ -41,6 +53,7 @@ export interface Config {
   omniroute: OmniRouteConfig;
   /** Seconds a probe may take before it is reported as failed. */
   probeTimeoutMs: number;
+  retry: RetryConfig;
 }
 
 export class ConfigError extends Error {}
@@ -126,6 +139,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       model: read(env, "OMNIROUTE_MODEL", "auto"),
     },
     probeTimeoutMs: integer(env, "BRIDGE_PROBE_TIMEOUT_MS", 3000),
+    retry: {
+      enabled: read(env, "BRIDGE_RETRY_ENABLED", "true") !== "false",
+      intervalMs: integer(env, "BRIDGE_RETRY_INTERVAL_MS", 60_000),
+      baseMs: integer(env, "BRIDGE_RETRY_BASE_MS", 60_000),
+      maxMs: integer(env, "BRIDGE_RETRY_MAX_MS", 3_600_000),
+      alertAfterMs: integer(env, "BRIDGE_RETRY_ALERT_AFTER_MS", 1_800_000),
+    },
   };
 }
 
@@ -143,5 +163,8 @@ export function describeConfig(config: Config): Record<string, string | number |
     console: config.console.baseUrl || "not configured",
     omniroute: config.omniroute.baseUrl || "not configured",
     omnirouteModel: config.omniroute.model,
+    retryEnabled: config.retry.enabled,
+    retryIntervalMs: config.retry.intervalMs,
+    retryAlertAfterMs: config.retry.alertAfterMs,
   };
 }

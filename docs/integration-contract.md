@@ -11,11 +11,12 @@ Base URL: `BRIDGE_ORIGIN` (default `http://localhost:8787`).
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/health` | none | Contract version and a probe of LMS, OpenMAIC, console and OmniRoute. `degraded` is not `failed`: an unconfigured dev box should not page anyone. |
+| GET | `/health` | none | Contract version, a probe of LMS, OpenMAIC, console and OmniRoute, and the completion retry backlog. `degraded` is not `failed`: an unconfigured dev box should not page anyone. A partial completion past its alert window is `failed`. |
 | GET | `/v1/gateway/models` | service | The models OmniRoute offers, so a bad key is distinguishable from a bad model name. |
 | POST | `/v1/sso/classroom` | service | Mint a classroom token for a learner + course. Idempotent per pair: re-entry returns the same classroom. |
 | POST | `/v1/classrooms` | service | Start a classroom in OpenMAIC and record it. 201 with job id, launch URL and token. |
-| POST | `/v1/completions` | hook signature **or** service | Accept one completion and fan it out. `?retry=1` re-runs only unfinished steps. |
+| POST | `/v1/completions` | hook signature **or** service | Accept one completion and fan it out. `?retry=1` re-runs only unfinished steps; a scheduled sweep also retries partial records automatically. |
+| GET | `/v1/completions/needs-retry` | service | Partial completions waiting for delivery: age, attempt count, next attempt, last error and whether the record is stale. |
 | POST | `/v1/credentials` | service | Ask the console for one credential (registrar action or backfill). Idempotent by `idempotencyKey`. |
 | GET | `/v1/learners/{id}/transcript` | service | The AI-instruction record for one learner, newest first. |
 | GET | `/v1/classrooms/{id}` | service | One classroom record. |
