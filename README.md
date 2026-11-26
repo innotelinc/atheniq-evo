@@ -1,5 +1,9 @@
 # AthenIQ Evo
 
+[![CI](https://github.com/innotelinc/atheniq-evo/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/atheniq-evo/actions/workflows/ci.yml)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-brightgreen.svg)](LICENSE)
+
+
 The AthenIQ estate, integrated: **Open edX** delivers the courseware, **OpenMAIC**
 runs in-class AI instruction, **Signara** signs and issues certificates and
 degrees, and the **AthenIQ console** is the records and awards service behind
@@ -318,3 +322,18 @@ first live run as the contract test for those two, and see `docs/runbook.md`.
   live and which drift. Writing an OLX package into the LMS is the Next.js
   console's publish pipeline, not this one — the institution says so on the
   course record rather than implying a course was pushed when it was not.
+
+## Why AthenIQ Evo
+
+| Problem | AthenIQ Evo answer |
+| --- | --- |
+| Fragmented tooling around this job | AthenIQ Evo owns the LearningOps responsibility as one surface |
+| Ad-hoc configuration and drift | Declarative setup, one identity, one secrets store |
+
+## Platform stack
+
+AthenIQ Evo is the **LearningOps** platform in the [**Innotel Platform Stack**](https://github.com/innotelinc/innotel-platform-stack) — the canonical single-responsibility architecture where Authentik owns identity, Cerulean Vault owns secrets, Cerulean owns trust, ONYX owns storage, Magnate owns revenue, and NPM Edge owns the edge. See [docs/stack.md](docs/stack.md) for this platform's owns/consumes boundaries.
+
+## License
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE).
