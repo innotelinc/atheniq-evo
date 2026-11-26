@@ -15,7 +15,7 @@
   "scripts": {
     "start": "node apps/bridge/src/main.ts",
     "dev": "node --watch apps/bridge/src/main.ts",
-    "test": "node --test apps/bridge/test/auth.test.ts apps/bridge/test/flow.test.ts apps/institution/test/institution.test.ts apps/institution/test/mail.test.ts apps/institution/test/catalog.test.ts",
+    "test": "node --test apps/bridge/test/auth.test.ts apps/bridge/test/flow.test.ts apps/institution/test/institution.test.ts apps/institution/test/mail.test.ts apps/institution/test/catalog.test.ts apps/institution/test/purge-demo.test.ts",
     "typecheck": "tsc -p apps/bridge/tsconfig.json --noEmit && tsc -p apps/institution/tsconfig.json --noEmit",
     "check:compose": "node scripts/check-compose-env.mjs",
     "check:openmaic-csp": "node scripts/check-openmaic-csp.mjs",
@@ -24,6 +24,8 @@
     "check": "npm run check:compose && npm run typecheck && npm test",
     "site": "node apps/institution/src/main.ts",
     "site:dev": "node --watch apps/institution/src/main.ts",
+    "purge:demo": "node apps/institution/src/purge-cli.ts",
+    "purge:demo:compose": "docker compose run --rm --no-deps --entrypoint node institution src/purge-cli.ts",
     "bootstrap": "bash scripts/bootstrap.sh"
   },
   "devDependencies": {

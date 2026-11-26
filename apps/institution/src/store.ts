@@ -21,6 +21,8 @@ export type EnrollmentStatus = "registered" | "completed" | "withdrawn";
 
 export interface Application {
   id: string;
+  /** Present only on demonstration records created by the seed. */
+  provenance?: "demo";
   firstName: string;
   lastName: string;
   email: string;
@@ -46,6 +48,8 @@ export interface Mailbox {
 export interface Student {
   /** The AthenIQ person id, and therefore the id the bridge and classroom use. */
   id: string;
+  /** Present only on demonstration records created by the seed. */
+  provenance?: "demo";
   number: string;
   firstName: string;
   lastName: string;
@@ -63,6 +67,8 @@ export interface Student {
 
 export interface Enrollment {
   id: string;
+  /** Present only on demonstration records created by the seed. */
+  provenance?: "demo";
   studentId: string;
   courseCode: string;
   termId: string;
@@ -168,6 +174,7 @@ export class Store {
     const now = new Date().toISOString();
     const student: Student = {
       id: "lrn_demo0001",
+      provenance: "demo",
       number: "ATH-2026-0001",
       firstName: "Nadia",
       lastName: "Rahman",
@@ -190,6 +197,7 @@ export class Store {
     this.data.counters.student = 1;
     this.data.applications.push({
       id: "app_demo0001",
+      provenance: "demo",
       firstName: "Jonas",
       lastName: "Weber",
       email: "jonas.weber@example.com",
@@ -204,6 +212,7 @@ export class Store {
     this.data.enrollments.push(
       {
         id: `enr_${randomBytes(4).toString("hex")}`,
+        provenance: "demo",
         studentId: student.id,
         courseCode: "AI201",
         termId: "2028B",
@@ -212,6 +221,7 @@ export class Store {
       },
       {
         id: `enr_${randomBytes(4).toString("hex")}`,
+        provenance: "demo",
         studentId: student.id,
         courseCode: "AI102",
         termId: "2027A",

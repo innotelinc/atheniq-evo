@@ -352,6 +352,40 @@ is worse than one that explains why it will not start.
 schedule, restore it into a scratch container monthly, and keep the copy off the
 host. A JSON registry with no restore rehearsal is not a backup.
 
+**Demonstration records.** `INSTITUTION_SEED_DEMO` writes records carrying
+`"provenance": "demo"`. The purge removes those, plus unmarked records from
+releases before that field, which it recognises by their fixed seed ids
+(`app_demo0001`, `lrn_demo0001`). It never matches a name or an email: a real
+applicant may share the demo student's name.
+
+The service holds the registry in memory and writes the whole file back on the
+next change, so **stop it first** — a purge against a running service is undone
+by the next admission or registration. The registry lives in the
+`institution-data` volume at `/data`, which a host script cannot see, so run the
+command inside the image, which already has that volume mounted:
+
+```bash
+docker compose stop institution
+npm run purge:demo:compose -- --data-dir /data --dry-run
+npm run purge:demo:compose -- --data-dir /data
+docker compose start institution
+```
+
+A deployment that keeps the registry on a host path (`npm run site` with
+`INSTITUTION_DATA_DIR=data/institution`) runs the same file in place:
+
+```bash
+npm run purge:demo -- --data-dir data/institution --dry-run
+npm run purge:demo -- --data-dir data/institution
+```
+
+The dry run reports counts and writes nothing. A real run copies `registry.json`
+to a timestamped `registry.json.bak-…` beside it, then rewrites the registry
+atomically. Demo enrollments are removed by their own marker and by their
+reference to a demo student; student counters are left unchanged so existing
+numbers are never reused. A second run finds nothing and creates no further
+backup.
+
 ## Security posture
 
 | Control | Implementation |
