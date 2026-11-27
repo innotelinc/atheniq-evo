@@ -15,7 +15,7 @@ lives, what must be configured, and what has and has not been proven.
 | Courses kept offline | 1 | unlimited |
 | AI study coach | — | yes |
 | Study analytics | — | yes |
-| Priority registrar review | — | yes |
+| Priority registrar review | — | yes (members are sorted first in the award queue) |
 
 Priced courses are unchanged: a course with a one-off price still goes through
 the registrar's transfer confirmation. Plus is not a way around a course fee.
@@ -49,6 +49,56 @@ phone ──purchase──► StoreKit / Play Billing ──► RevenueCat ─�
 - **A registrar can grant Plus** by writing a membership row with
   `store: "granted"` and `expiresAt: null`; a store lookup cannot revoke a
   grant.
+- **Priority review is the queue order, not a shortcut.** Both the console's
+  Credential center and the app's registrar queue call `plusFirst`
+  (`lib/premium.ts`), which puts active and granted members ahead of everyone
+  else while keeping each group in arrival order; the console table marks those
+  rows `Plus`. A lapsed or refunded row has no priority. The award itself still
+  needs the same evidence, the same registrar and the same signature.
+
+### The webhook must be reachable without a session
+
+RevenueCat calls the webhook from its own servers, with no cookie. Two gates
+have to let it through:
+
+1. **The console middleware.** `/api/internal/revenuecat/` is in `PUBLIC_PATHS`
+   in `middleware.ts`, so the path reaches its route without a staff session.
+   The route then checks `Authorization: Bearer $REVENUECAT_WEBHOOK_TOKEN` in
+   constant time; without the token configured it answers `503` and writes
+   nothing.
+2. **The edge — not passing today.** Measured on 27 Nov 2026 against
+   `https://registrar.atheniq.institute`: `/privacy` and `/api/health/digest`
+   answer `200`, and **every other path is `302` to Authentik**
+   (`auth.cerulean.innotel.us`, client `classroom`) — including
+   `/api/internal/revenuecat/webhook` and `/api/mobile/v1/me`. So the webhook is
+   not reachable, and neither is the mobile API through that host.
+   `console.atheniq.institute` does not resolve yet.
+
+   Fix it at the edge before the first event: add the webhook to whatever list
+   already exempts `/api/health/digest` (Authentik proxy provider →
+   *Unauthenticated paths*, or the equivalent NPM bypass), and add
+   `^/api/mobile/` for the app itself:
+
+   ```
+   ^/api/internal/revenuecat/webhook$
+   ^/api/mobile/
+   ```
+
+   The webhook still needs its bearer token; the bypass only removes the browser
+   login that a server-to-server call cannot perform.
+
+Probe it from outside before the first event (a `GET` writes nothing):
+
+```bash
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  https://console.atheniq.institute/api/internal/revenuecat/webhook
+```
+
+Expect `405` — the route has no GET, which proves the request reached the app.
+`302`/`303` to `auth.…/application/o/authorize/`, `401` with
+`{"ok":false,"error":"Sign in to use the console."}`, or `403` from the edge
+means a gate is still in front of it. `404` means nothing answers on that host
+at all.
 
 The offline quota is recorded server-side (`downloads[]`) rather than on the
 device, so reinstalling the app does not reset it.
@@ -60,7 +110,7 @@ Console (Compose service `console`, from `.env`):
 | Variable | Purpose |
 | --- | --- |
 | `REVENUECAT_SECRET_KEY` | Reads a learner's entitlement. Unset: the sync route answers `503` and grants nothing. |
-| `REVENUECAT_WEBHOOK_TOKEN` | Expected `Authorization: Bearer …` on the webhook. Unset: the webhook answers `503`. |
+| `REVENUECAT_WEBHOOK_TOKEN` | Expected `Authorization: Bearer …` on `POST /api/internal/revenuecat/webhook`. Unset: the webhook answers `503`. |
 | `REVENUECAT_ENTITLEMENT_ID` | Defaults to `plus`. |
 
 Mobile build (public keys, baked in at build time — never secrets):
@@ -93,10 +143,21 @@ cannot take a payment: use a development build for sandbox purchases.
 
 ## Verification
 
-- `cd upstream/atheniq-console && npm run test:premium` — 6 tests over the real
+- `cd upstream/atheniq-console && npm run test:premium` — 7 tests over the real
   modules: free quota and re-download, active/lapsed/granted memberships, the
-  entitlement filter, `404` for an unknown subscriber, and renewal /
-  cancellation / expiration / refund mapping.
+  entitlement filter, `404` for an unknown subscriber, renewal / cancellation /
+  expiration / refund mapping, and the registrar queue order (members first, a
+  lapsed row without priority, input not mutated).
+- The webhook path was requested from a local console with `AUTH_PASSWORD` set:
+  it answered `503` (its own unconfigured response) rather than the middleware's
+  `401`, so no session gate stands in front of it. `GET` answered `405` and
+  `/api/credentials` answered the middleware's `401` in the same run — the
+  control path.
+- **The edge does not pass it yet**: a `GET` on the public host is redirected to
+  Authentik (see “The webhook must be reachable without a session”). Until that
+  exemption is added, RevenueCat's events will not arrive, and the mobile API is
+  equally unreachable from a phone. This is the one open item outside this
+  repository.
 - `npm run typecheck` in the console, and `tsc --noEmit` in `mobile`: both pass
   after the patch.
 - `npm run check` at the repository root covers the estate (bridge and

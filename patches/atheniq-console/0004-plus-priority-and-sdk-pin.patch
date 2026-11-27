@@ -1,0 +1,363 @@
+diff --git a/lib/premium.ts b/lib/premium.ts
+index 8eb7dc1..b73edc8 100644
+--- a/lib/premium.ts
++++ b/lib/premium.ts
+@@ -132,3 +132,54 @@ export function upsertMembership(db: Database, next: Membership): void {
+   if (index === -1) db.memberships.push(next);
+   else db.memberships[index] = next;
+ }
++
++/**
++ * Who holds Plus right now, as lookup keys: `id:<learnerId>` and
++ * `email:<lower-case address>`.
++ *
++ * Both are kept because the records a registrar works from carry an address
++ * rather than the learner id — an award, a purchase or a request names the
++ * person by email. One pass over the memberships keeps the queue's sort from
++ * turning into a lookup per row.
++ */
++export function plusLearnerKeys(db: Database, now = new Date()): Set<string> {
++  const keys = new Set<string>();
++  for (const membership of db.memberships ?? []) {
++    if (!active(membership, now)) continue;
++    keys.add(`id:${membership.learnerId}`);
++    const learner = (db.learners ?? []).find((row) => row.id === membership.learnerId);
++    if (learner) keys.add(`email:${learner.email.toLowerCase()}`);
++  }
++  return keys;
++}
++
++/** Whether this person is named by the keys `plusLearnerKeys` returns. */
++export function isPlusLearner(
++  keys: Set<string>,
++  who: { id?: string | null; email: string },
++): boolean {
++  if (who.id && keys.has(`id:${who.id}`)) return true;
++  return keys.has(`email:${who.email.toLowerCase()}`);
++}
++
++/**
++ * The registrar's queue order: Plus members first, then everyone else, each
++ * group in the order it arrived in.
++ *
++ * This is the one thing the paywall promises that only the console can deliver:
++ * a member's certificate request is seen before a free account's. It is a
++ * tie-breaker, not a bypass — the award still needs the same evidence, the same
++ * registrar and the same signature.
++ */
++export function plusFirst<T>(
++  db: Database,
++  rows: readonly T[],
++  learnerOf: (row: T) => { id?: string | null; email: string },
++  now = new Date(),
++): T[] {
++  const keys = plusLearnerKeys(db, now);
++  const head: T[] = [];
++  const tail: T[] = [];
++  for (const row of rows) (isPlusLearner(keys, learnerOf(row)) ? head : tail).push(row);
++  return [...head, ...tail];
++}
+diff --git a/app/credentials/page.tsx b/app/credentials/page.tsx
+index 9e8dcaa..9fc0734 100644
+--- a/app/credentials/page.tsx
++++ b/app/credentials/page.tsx
+@@ -3,6 +3,7 @@ import { getDb } from "@/lib/store";
+ import { shortDate } from "@/lib/format";
+ import { Badge, Card, Empty, PageHead, Stat, Topbar, Crumbs } from "@/components/ui";
+ import { IssueCredentialForm } from "@/components/IssueCredentialForm";
++import { isPlusLearner, plusFirst, plusLearnerKeys } from "@/lib/premium";
+ 
+ export const dynamic = "force-dynamic";
+ 
+@@ -15,9 +16,16 @@ export default async function CredentialsPage({
+   const db = getDb();
+   const status = params.status ?? "";
+ 
+-  const credentials = db.credentials
+-    .filter((credential) => (status ? credential.status === status : true))
+-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
++  // Newest first, then Plus members ahead of everyone else: the queue order a
++  // registrar works down. Priority is a tie-breaker, not a bypass.
++  const plusKeys = plusLearnerKeys(db);
++  const credentials = plusFirst(
++    db,
++    db.credentials
++      .filter((credential) => (status ? credential.status === status : true))
++      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
++    (credential) => ({ email: credential.learner.email }),
++  );
+ 
+   const issued = db.credentials.filter((c) => ["issued", "signed"].includes(c.status)).length;
+   const pending = db.credentials.filter((c) => ["queued_local", "partial", "failed", "draft"].includes(c.status)).length;
+@@ -100,6 +108,11 @@ export default async function CredentialsPage({
+                         <td>
+                           <div className="small">{credential.learner.name}</div>
+                           <div className="tiny muted">{credential.learner.email}</div>
++                          {isPlusLearner(plusKeys, { email: credential.learner.email }) && (
++                            <span className="chip ok" title="AthenIQ Plus member: seen first in this queue">
++                              Plus
++                            </span>
++                          )}
+                         </td>
+                         <td>
+                           <Badge status={credential.status} />
+diff --git a/app/api/mobile/v1/registrar/route.ts b/app/api/mobile/v1/registrar/route.ts
+index 7ccd94d..8ef9fb6 100644
+--- a/app/api/mobile/v1/registrar/route.ts
++++ b/app/api/mobile/v1/registrar/route.ts
+@@ -1,6 +1,7 @@
+ import { getDb } from "@/lib/store";
+ import { fail, ok, preflight } from "@/lib/mobile-api";
+ import { bearerIdentity } from "@/lib/mobile-auth";
++import { isPlusLearner, plusFirst, plusLearnerKeys } from "@/lib/premium";
+ 
+ export const dynamic = "force-dynamic";
+ 
+@@ -15,10 +16,17 @@ export async function GET(request: Request) {
+   const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+ 
+   const active = db.enrollments.filter((enrollment) => !enrollment.completedAt);
+-  const queue = db.credentials
+-    .filter((credential) => credential.status === "queued_local" || credential.status === "submitted" || credential.status === "partial" || credential.status === "signed")
+-    .slice()
+-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
++  // Plus members ahead of everyone else, newest first inside each group: the
++  // order a registrar works down. Priority is a tie-breaker, not a bypass.
++  const plusKeys = plusLearnerKeys(db);
++  const queue = plusFirst(
++    db,
++    db.credentials
++      .filter((credential) => credential.status === "queued_local" || credential.status === "submitted" || credential.status === "partial" || credential.status === "signed")
++      .slice()
++      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
++    (credential) => ({ email: credential.learner.email }),
++  )
+     .slice(0, 25)
+     .map((credential) => ({
+       id: credential.id,
+@@ -30,6 +38,7 @@ export async function GET(request: Request) {
+       verifyId: credential.verifyId,
+       createdAt: credential.createdAt,
+       detail: credential.timeline[credential.timeline.length - 1]?.label ?? "",
++      plus: isPlusLearner(plusKeys, { email: credential.learner.email }),
+     }));
+ 
+   return ok({
+diff --git a/scripts/premium-test.mjs b/scripts/premium-test.mjs
+index 7a6f482..25f1204 100644
+--- a/scripts/premium-test.mjs
++++ b/scripts/premium-test.mjs
+@@ -12,6 +12,9 @@ import {
+   FREE_OFFLINE_COURSES,
+   downloadAllowed,
+   isPlus,
++  isPlusLearner,
++  plusFirst,
++  plusLearnerKeys,
+   premiumSnapshot,
+   recordDownload,
+   upsertMembership,
+@@ -162,3 +165,51 @@ test("store events renew, lapse and refund without ever shortening a paid term e
+   const refunded = membershipFromEvent({ type: "REFUND", app_user_id: "lrn_1" }, "lrn_1", NOW);
+   assert.equal(refunded?.status, "refunded");
+ });
++
++// The paywall promises members are reviewed first, so the registrar's queue has
++// to actually do it — and a lapsed row must not keep the privilege.
++test("the certificate queue puts Plus members first and leaves the rest in order", () => {
++  const db = {
++    memberships: [],
++    downloads: [],
++    learners: [
++      { id: "lrn_plus", email: "Member@Example.com" },
++      { id: "lrn_lapsed", email: "lapsed@example.com" },
++      { id: "lrn_granted", email: "granted@example.com" },
++    ],
++  };
++  upsertMembership(db, membership({ learnerId: "lrn_plus" }));
++  upsertMembership(
++    db,
++    membership({ learnerId: "lrn_lapsed", status: "expired", expiresAt: PAST }),
++  );
++  upsertMembership(
++    db,
++    membership({ learnerId: "lrn_granted", status: "granted", store: "granted", expiresAt: null }),
++  );
++
++  const queue = [
++    { id: "free-newest", email: "free@example.com" },
++    { id: "member-older", email: "member@example.com" },
++    { id: "lapsed-newest", email: "lapsed@example.com" },
++    { id: "granted-older", email: "granted@example.com" },
++    { id: "stranger-older", email: "stranger@example.com" },
++  ];
++
++  const ordered = plusFirst(db, queue, (row) => ({ email: row.email }), NOW);
++  assert.deepEqual(
++    ordered.map((row) => row.id),
++    ["member-older", "granted-older", "free-newest", "lapsed-newest", "stranger-older"],
++    "members first in their own order, then everyone else in the order they came",
++  );
++  assert.deepEqual(
++    queue.map((row) => row.id),
++    ["free-newest", "member-older", "lapsed-newest", "granted-older", "stranger-older"],
++    "sorting does not mutate the queue it was given",
++  );
++
++  const keys = plusLearnerKeys(db, NOW);
++  assert.equal(isPlusLearner(keys, { email: "MEMBER@example.com" }), true, "addresses match regardless of case");
++  assert.equal(isPlusLearner(keys, { email: "lapsed@example.com" }), false, "a lapsed membership has no priority");
++  assert.equal(isPlusLearner(keys, { id: "lrn_plus", email: "changed@example.com" }), true, "the id still matches");
++});
+diff --git a/middleware.ts b/middleware.ts
+index 559c8cc..05cfe7f 100644
+--- a/middleware.ts
++++ b/middleware.ts
+@@ -31,6 +31,9 @@ const PUBLIC_PATHS = [
+   // The digest answers a scheduler holding DIGEST_TOKEN; the route itself
+   // rejects anything without a valid token or a registrar session.
+   /^\/api\/health\/digest(\/|$)/,
++  // RevenueCat's server-to-server events. RevenueCat has no console session;
++  // the route compares the bearer token itself, in constant time.
++  /^\/api\/internal\/revenuecat(\/|$)/,
+   /^\/_next\//,
+   /^\/favicon\.ico$/,
+ ];
+diff --git a/mobile/package.json b/mobile/package.json
+index 7976621..d0a62b2 100644
+--- a/mobile/package.json
++++ b/mobile/package.json
+@@ -19,7 +19,7 @@
+     "react": "19.3.0",
+     "react-dom": "19.3.0",
+     "react-native": "0.88.1",
+-    "react-native-purchases": "^11.0.5",
++    "react-native-purchases": "10.16.1",
+     "react-native-reanimated": "4.7.1",
+     "react-native-safe-area-context": "~5.11.1",
+     "react-native-screens": "~4.30.1",
+diff --git a/mobile/package-lock.json b/mobile/package-lock.json
+index e98a4c7..83cc544 100644
+--- a/mobile/package-lock.json
++++ b/mobile/package-lock.json
+@@ -24,7 +24,7 @@
+         "react": "19.3.0",
+         "react-dom": "19.3.0",
+         "react-native": "0.88.1",
+-        "react-native-purchases": "^11.0.5",
++        "react-native-purchases": "10.16.1",
+         "react-native-reanimated": "4.7.1",
+         "react-native-safe-area-context": "~5.11.1",
+         "react-native-screens": "~4.30.1",
+@@ -2568,24 +2568,24 @@
+       }
+     },
+     "node_modules/@revenuecat/purchases-js": {
+-      "version": "1.78.1",
+-      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-js/-/purchases-js-1.78.1.tgz",
+-      "integrity": "sha512-ezNgnA3Y2lng21o3eDl3bpEdxQePC7ecvxXXoztMqBDj47UPaU0CoB8u2wBo8Vt2iJMGW6aFkXBjjkCG0jI4Ow==",
++      "version": "1.73.1",
++      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-js/-/purchases-js-1.73.1.tgz",
++      "integrity": "sha512-TAwDzTqFfNCcIkbWOpxfYhvrUbnyW1XhgO78pp78InRRovBdMiXRgyrDT0ELYyCKjPZxtiSjzmHshIXIJ/H0dQ==",
+       "license": "MIT"
+     },
+     "node_modules/@revenuecat/purchases-js-hybrid-mappings": {
+-      "version": "20.14.0",
+-      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-js-hybrid-mappings/-/purchases-js-hybrid-mappings-20.14.0.tgz",
+-      "integrity": "sha512-ISTzZb4vceWe7d1odOzPszUHsfuRpv0iMseBbXXkrYiN757qyHrTwY92EQCIAMkFoRAlBuKuRNqf5elqGL6+sg==",
++      "version": "19.17.0",
++      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-js-hybrid-mappings/-/purchases-js-hybrid-mappings-19.17.0.tgz",
++      "integrity": "sha512-yKJVxG4rXkEJqF+42RvBOT87XfW+qKuwquYrvoQno2/ZYUWFalEzMxRC2d1/U9fie1Fqr2Yg+BwGCgVm4rHotA==",
+       "license": "MIT",
+       "dependencies": {
+-        "@revenuecat/purchases-js": "1.78.1"
++        "@revenuecat/purchases-js": "1.73.1"
+       }
+     },
+     "node_modules/@revenuecat/purchases-typescript-internal": {
+-      "version": "20.14.0",
+-      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-typescript-internal/-/purchases-typescript-internal-20.14.0.tgz",
+-      "integrity": "sha512-MhhPh14pGIiTj3AkrrV+uGt+2xmvGKrDMn2jAUt5C+6Nf3SzxOfu6nLVJYVMF8oTf0DekixuXnhh6Fo8VStaZg==",
++      "version": "19.17.0",
++      "resolved": "https://registry.npmjs.org/@revenuecat/purchases-typescript-internal/-/purchases-typescript-internal-19.17.0.tgz",
++      "integrity": "sha512-v3cfqEDQDlejOV7QM3gku3WHdXp9MUtuFwXq3y5fla3khCMNVjxniV1dgKhl9jzsMsRmf7IWFxdb25HJeaQzJQ==",
+       "license": "MIT"
+     },
+     "node_modules/@sinclair/typebox": {
+@@ -6589,9 +6589,9 @@
+       }
+     },
+     "node_modules/react-native-purchases": {
+-      "version": "11.0.5",
+-      "resolved": "https://registry.npmjs.org/react-native-purchases/-/react-native-purchases-11.0.5.tgz",
+-      "integrity": "sha512-YGJtzpc6JS5b30v3FSxTS1A4vUIU0naqXF3plvkNrBK2LekdYX2QG/ngwDiayu71f24MHWfzrG1JIVbz27lRrg==",
++      "version": "10.16.1",
++      "resolved": "https://registry.npmjs.org/react-native-purchases/-/react-native-purchases-10.16.1.tgz",
++      "integrity": "sha512-8wMCGznNWf8dZpK8iFbxuTre+OR3iHnr5Eihgla5xf4nZANN9lBQ+RSOWKARHAibYp7qslUyiNx2PxBX8VvSww==",
+       "license": "MIT",
+       "workspaces": [
+         "examples/purchaseTesterTypescript",
+@@ -6601,12 +6601,12 @@
+         "e2e-tests/MaestroTestApp"
+       ],
+       "dependencies": {
+-        "@revenuecat/purchases-js-hybrid-mappings": "20.14.0",
+-        "@revenuecat/purchases-typescript-internal": "20.14.0"
++        "@revenuecat/purchases-js-hybrid-mappings": "19.17.0",
++        "@revenuecat/purchases-typescript-internal": "19.17.0"
+       },
+       "peerDependencies": {
+         "react": ">= 16.6.3",
+-        "react-native": ">= 0.80.0",
++        "react-native": ">= 0.73.0",
+         "react-native-web": "*"
+       },
+       "peerDependenciesMeta": {
+diff --git a/mobile/store/premium.md b/mobile/store/premium.md
+index e25e1ae..e12028e 100644
+--- a/mobile/store/premium.md
++++ b/mobile/store/premium.md
+@@ -50,7 +50,9 @@ in the app: the store reports eligibility, and RevenueCat carries it.
+    - `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY`
+ 5. Create a **secret** API key (V1, read access is enough) and a webhook:
+    - Console: `REVENUECAT_SECRET_KEY`, `REVENUECAT_ENTITLEMENT_ID=plus`
+-   - Webhook URL: `https://registrar.atheniq.institute/api/internal/revenuecat/webhook`
++   - Webhook URL: `https://console.atheniq.institute/api/internal/revenuecat/webhook`
++     (while the console still answers on the registrar host, use
++     `https://registrar.atheniq.institute/api/internal/revenuecat/webhook`)
+    - Webhook authorization header: `Bearer <REVENUECAT_WEBHOOK_TOKEN>`, and the
+      same value in the console environment.
+    - Send all events; the handler treats renewals, expirations, cancellations,
+@@ -62,6 +64,17 @@ entitlement named `plus` becomes a membership row. Without
+ `REVENUECAT_SECRET_KEY` the route answers `503 storeConfigured:false` and
+ grants nothing.
+ 
++## SDK version
++
++The app pins `react-native-purchases` to **10.16.1**, exactly — no caret. This
++is the version Expo SDK 58 (React Native 0.88) can build: EAS builds iOS with
++CocoaPods, and RevenueCat's 11.x release note says to stay on 10.x for Expo apps
++until the `PurchasesHybridCommon` pod and the Swift Package Manager path are in
++place (`12.0.0` requires RN 0.88 with SwiftPM). 10.16.1 is also what npm's
++`hotfix` dist-tag points at. Move to 11/12 as a deliberate migration once the
++iOS build uses SwiftPM and the v11 API changes are applied, not by drifting a
++caret range.
++
+ ## App configuration
+ 
+ `app.json` carries version `1.1.0` / iOS build `2` / Android `versionCode 2`.
+@@ -103,7 +116,13 @@ all four.
+ - [ ] Offering `default` has monthly and yearly packages
+ - [ ] `EXPO_PUBLIC_REVENUECAT_*` keys in the production build env
+ - [ ] Console has `REVENUECAT_SECRET_KEY` and `REVENUECAT_WEBHOOK_TOKEN`
+-- [ ] Webhook reachable and returning 200 for a test event
++- [ ] Edge exempts the webhook (and `/api/mobile/`) from Authentik forward auth:
++      today every path but `/privacy` and `/api/health/digest` is `302` to
++      Authentik, so both the webhook and the app are unreachable until this is
++      added
++- [ ] Webhook reachable from the public internet: a GET on the path answers
++      `405` (the route's own), never `302` to Authentik, `401` from the console
++      middleware, `403` from the edge or `404`
+ - [ ] Sandbox purchase, restore, renewal, cancellation, refund all observed
+ - [ ] Free tier still reads every lesson of an enrolled free course
+ - [ ] Screenshots include the paywall and the plan row in Account
