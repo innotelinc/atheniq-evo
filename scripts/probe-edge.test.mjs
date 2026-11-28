@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { appBaseFrom, main, mobileBase, resolveBase } from "./probe-edge.mjs";
+import { appBaseFrom, classify, main, mobileBase, resolveBase } from "./probe-edge.mjs";
 
 /** What `mobile/lib/api.ts` compiles in, in miniature. */
 const CLIENT = [
@@ -118,6 +118,124 @@ describe("where the host comes from", () => {
       base: "https://app.example",
       source: "mobile/lib/api.ts",
     });
+  });
+});
+
+/**
+ * One row per gate `classify()` can name, with the response that produces it.
+ * The gate is what the operator acts on, so each row is a real answer as well
+ * as an evidence string: a wrong gate sends somebody to the wrong config file.
+ */
+const GATES = [
+  {
+    name: "nothing at all, below HTTP",
+    response: { status: 0, error: "ENOTFOUND" },
+    gate: "none",
+    evidence: /no response/,
+  },
+  {
+    name: "Authentik's forward auth, on the IdP host",
+    response: {
+      status: 302,
+      location:
+        "https://auth.innotel.us/application/o/authorize/?client_id=classroom&redirect_uri=https%3A%2F%2Fregistrar.atheniq.institute%2Fapi%2Fmobile%2Fv1&state=x",
+    },
+    gate: "authentik",
+    evidence: /application\/o\/authorize/,
+  },
+  {
+    name: "Authentik's outpost start URL",
+    response: { status: 302, location: "https://auth.innotel.us/outpost.goauthentik.io/start?rd=%2Fapi%2Fmobile%2Fv1" },
+    gate: "authentik",
+    evidence: /outpost\.goauthentik\.io/,
+  },
+  {
+    name: "the console middleware's own 401",
+    response: {
+      status: 401,
+      contentType: "application/json",
+      body: '{"ok":false,"error":"Sign in to use the console."}',
+    },
+    gate: "console-middleware",
+    evidence: /middleware answered 401 JSON/,
+  },
+  {
+    name: "the console middleware's sign-in redirect",
+    response: { status: 307, location: "https://console.atheniq.institute/login?next=%2Fapi%2Fcredentials" },
+    gate: "console-middleware",
+    evidence: /sign-in redirect to /,
+  },
+  {
+    name: "the proxy's own 404 page",
+    response: {
+      status: 404,
+      contentType: "text/html",
+      body: "<html><body><h1>404 Not Found</h1><hr><center>openresty</center></body></html>",
+    },
+    gate: "edge",
+    evidence: /the proxy answered 404 itself/,
+  },
+  {
+    name: "the proxy's own 403 page",
+    response: {
+      status: 403,
+      contentType: "text/html",
+      body: "<html><body><h1>403 Forbidden</h1><hr><center>nginx</center></body></html>",
+    },
+    gate: "edge",
+    evidence: /the proxy answered 403 itself/,
+  },
+  {
+    name: "the route answering as itself",
+    response: { status: 200, contentType: "application/json", body: '{"ok":true}' },
+    gate: "app",
+    evidence: /the route answered/,
+  },
+  {
+    name: "the route's own 500",
+    response: { status: 500, contentType: "application/json", body: '{"ok":false,"error":"boom"}' },
+    gate: "app",
+    evidence: /the route answered/,
+  },
+  {
+    name: "Authentik ahead of a proxy-shaped body",
+    response: {
+      status: 302,
+      location: "https://auth.innotel.us/application/o/authorize/?client_id=classroom",
+      body: "<hr><center>openresty</center>",
+    },
+    gate: "authentik",
+    evidence: /application\/o\/authorize/,
+  },
+  {
+    name: "the middleware ahead of a proxy-shaped body",
+    response: {
+      status: 401,
+      body: '<hr><center>nginx</center>{"error":"Sign in to use the console."}',
+    },
+    gate: "console-middleware",
+    evidence: /middleware answered 401 JSON/,
+  },
+];
+
+describe("which gate answered", () => {
+  for (const { name, response, gate, evidence } of GATES) {
+    it(`names ${gate}: ${name}`, () => {
+      const result = classify(response);
+      assert.equal(result.gate, gate);
+      assert.match(result.evidence, evidence);
+    });
+  }
+
+  it("names every gate the probe knows how to print a fix for", () => {
+    assert.deepEqual(
+      [...new Set(GATES.map((row) => row.gate))].sort(),
+      ["app", "authentik", "console-middleware", "edge", "none"],
+    );
+  });
+
+  it("defaults the response fields the caller may omit", () => {
+    assert.deepEqual(classify({ status: 200 }), { gate: "app", evidence: "the route answered" });
   });
 });
 
