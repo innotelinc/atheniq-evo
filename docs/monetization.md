@@ -215,7 +215,8 @@ cannot take a payment: use a development build for sandbox purchases.
 - `npm run typecheck` in the console, and `tsc --noEmit` in `mobile`: both pass
   after the patch.
 - `npm run check` at the repository root covers the estate (bridge and
-  institution), not the console or the app.
+  institution) and `scripts/probe-edge.test.mjs`, which pins which host the
+  probe asks and that it refuses to guess one — not the console or the app.
 
 Not proven here, and required before submission: a sandbox purchase, restore,
 renewal, cancellation and refund on a device; the App Store and Play products
