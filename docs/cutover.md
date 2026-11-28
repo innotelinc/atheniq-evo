@@ -51,7 +51,9 @@ that order; the console is step 5.
 `https://registrar.atheniq.institute` for `EXPO_PUBLIC_API_BASE` and its
 `privacyPolicyUrl`. Point both at `https://console.atheniq.institute` and publish
 an app build before the registrar host moves, or the installed app starts
-answering from the institution, which serves none of its routes.
+answering from the institution, which serves none of its routes. Do not change
+`EXPO_PUBLIC_API_BASE` anywhere else: `npm run probe:edge` reads that value from
+`mobile/lib/api.ts`, so it checks the host the app is built for.
 
 **Ports.** In `.env` on i3:
 
@@ -245,6 +247,15 @@ For each name:
   sign-in, and its POSTs check `Origin` against `Host`. An outpost in front means
   two logins and a session the institution never issued. If you want forward auth
   for the console, put it on `console.atheniq.institute` only.
+- **If the console host keeps forward auth, exempt the two sessionless paths.**
+  The app calls `/api/mobile/` for everything it does and RevenueCat calls
+  `/api/internal/revenuecat/webhook` from its own servers; neither can perform a
+  browser sign-in, so an outpost on the console host must list both under
+  *Unauthenticated paths* or the app is unusable and renewals never arrive.
+  `npm run probe:edge` names the gate that answered, and it asks the host in
+  `EXPO_PUBLIC_API_BASE` — the app's own value — so it follows the app here
+  without being told twice. `docs/monetization.md` → “Edge bypass” has the
+  patterns.
 - **Websockets and long responses** on `classroom`: OpenMAIC streams generation
   output, so leave `proxy_buffering off`, raise the read timeout to 300s, and
   allow a 200 MB body (its own `proxyClientMaxBodySize` is 200 MB).

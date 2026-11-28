@@ -19,6 +19,7 @@
     "typecheck": "tsc -p apps/bridge/tsconfig.json --noEmit && tsc -p apps/institution/tsconfig.json --noEmit",
     "check:compose": "node scripts/check-compose-env.mjs",
     "check:openmaic-csp": "node scripts/check-openmaic-csp.mjs",
+    "probe:edge": "node scripts/probe-edge.mjs",
     "up": "bash scripts/up.sh",
     "deploy:coolify": "node scripts/coolify-deploy.mjs",
     "check": "npm run check:compose && npm run typecheck && npm test",
